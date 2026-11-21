@@ -24,3 +24,9 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 ## Packages
 
 The Desktop packages workflow uploads Windows x64 NSIS, macOS Intel and Apple Silicon DMGs, Linux x64 AppImage and Debian packages, and Raspberry Pi OS aarch64 and armhf Debian packages. CI artifacts are for verification. See the [plan](PLAN.md) and [progress report](PROGRESS.md).
+
+### Publishing Chataigne 2 and MapGyver 2
+
+The launcher reads public releases from [Golden-Geek/Chataigne2](https://github.com/Golden-Geek/Chataigne2/releases). Use a versioned tag such as `v2.0.0-beta.1` and include the product, matching version, and target in each asset name. For example, `Chataigne2_2.0.0-beta.1_x64-setup.exe` is a Windows asset and `MapGyver2_2.0.0-beta.1_aarch64.dmg` is an Apple Silicon asset. A release may include assets for both apps.
+
+For MapGyver 2 on macOS, the disk image must contain a bundle with identifier `com.goldengeek.mapgyver2`, which the launcher installs as `~/Applications/MapGyver2.app`. On Windows the setup executable must identify itself as MapGyver 2. The launcher gives it a separate installation directory.

@@ -11,6 +11,8 @@ pub use linux::{detect, install, launch};
 pub(crate) use macos::validate_pkg;
 #[cfg(target_os = "macos")]
 pub use macos::{detect, install, launch};
+#[cfg(all(test, windows))]
+pub(crate) use windows::install_on_disposable_runner;
 #[cfg(windows)]
 pub use windows::{detect, install, launch};
 

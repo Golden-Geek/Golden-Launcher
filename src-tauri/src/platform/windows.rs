@@ -31,6 +31,7 @@ use crate::{
 use super::{InstallResult, Installed, newest, same_version, working_directory};
 
 const UNINSTALL: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
+const INNO_QUIET_ARGS: &str = "/VERYSILENT /SP- /NORESTART /RESTARTEXITCODE=3010";
 
 fn names(id: AppId) -> &'static [&'static str] {
     match id {
@@ -277,7 +278,7 @@ pub fn install(
 ) -> Result<InstallResult, String> {
     validate_installer(id, path, release)?;
     let args = match (release.package.kind, graphical) {
-        (PackageKind::Inno, false) => "/VERYSILENT /SP- /NORESTART /RESTARTEXITCODE=3010",
+        (PackageKind::Inno, false) => INNO_QUIET_ARGS,
         (PackageKind::Inno, true) => "/NORESTART /RESTARTEXITCODE=3010",
         (PackageKind::Nsis, false) => "/S",
         (PackageKind::Nsis, true) => "",
@@ -317,6 +318,24 @@ pub fn launch(installed: &Installed) -> Result<u32, String> {
         .spawn()
         .map(|child| child.id())
         .map_err(|error| format!("Could not open the installed app ({error})."))
+}
+
+#[cfg(test)]
+pub(crate) fn install_on_disposable_runner(
+    id: AppId,
+    path: &Path,
+    release: &Release,
+) -> Result<InstallResult, String> {
+    validate_installer(id, path, release)?;
+    let status = Command::new(path)
+        .args(INNO_QUIET_ARGS.split_whitespace())
+        .status()
+        .map_err(|error| format!("Could not start the official Inno Setup package ({error})."))?;
+    installer_exit(
+        status
+            .code()
+            .ok_or("No installer exit code was available.")? as u32,
+    )
 }
 
 #[cfg(test)]

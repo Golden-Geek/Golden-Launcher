@@ -51,6 +51,7 @@ jobs:
           npm run build
       - name: Verify official packages on Windows and macOS
         if: runner.os != 'Linux'
+        timeout-minutes: 10
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml official_chataigne_platform_smoke -- --ignored --nocapture
       - name: Install, update, and launch in a Linux desktop session
         if: runner.os == 'Linux'

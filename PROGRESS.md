@@ -8,18 +8,20 @@
 | 2 | Publisher feeds, target resolution, versions, and offline cache | Done |
 | 3 | Download verification, installation, detection, and launch | Done |
 | 4 | Library, Updates, and inline operation controls | Done |
-| 5 | Automated checks and six-target CI packaging | In progress · workflow added |
+| 5 | Automated checks and six-target CI packaging | In progress · packages uploaded for 4 of 6 targets |
 | 6 | Official install, update, and launch smoke tests on all six targets | In progress · Linux x64 verified with Xvfb |
 
 Each milestone counts equally. The smoke-test milestone includes Raspberry Pi OS hardware for both architectures and a coexistence check once a qualifying MapGyver 2 package is available.
+
+[Desktop packaging run](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44913372437)
 
 ## Publisher smoke tests
 
 | Target | Official install → update → open |
 |---|---|
-| Windows x64 | Hosted smoke test prepared |
-| macOS Intel | Native package preflight prepared. Interactive install and launch pending. |
-| macOS Apple Silicon | Native package preflight prepared. Interactive install and launch pending. |
+| Windows x64 | Disposable-runner smoke test in progress. Interactive downloaded-file approval pending. |
+| macOS Intel | Official package identity, version, and architecture verified. Interactive install, update, and launch pending. |
+| macOS Apple Silicon | Official package identity, version, and architecture verified. Interactive install, update, and launch pending. |
 | Linux x64 | Passed with official Chataigne 1.10.4 → 1.10.5b14 in an Xvfb desktop session, including the FUSE fallback. |
 | Raspberry Pi OS aarch64 | Physical-device test pending |
 | Raspberry Pi OS armhf | Physical-device test pending |

@@ -550,9 +550,18 @@ mod tests {
             }
             #[cfg(not(target_os = "macos"))]
             {
+                #[cfg(target_os = "linux")]
                 let result =
-                    platform::install(id, work.path(), &path, &release, &digest, false, target)
-                        .unwrap();
+                    platform::install(id, work.path(), &path, &release, &digest, false, target);
+                #[cfg(windows)]
+                let result = {
+                    let _ = digest;
+                    println!(
+                        "Running verified official Chataigne {version} on the disposable Windows runner."
+                    );
+                    platform::install_on_disposable_runner(id, &path, &release)
+                };
+                let result = result.unwrap();
                 assert!(matches!(result, InstallResult::Finished));
                 let found = platform::detect(id, work.path(), target).expect("installed Chataigne");
                 assert!(same_version(&found.version, version));
