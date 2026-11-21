@@ -21,7 +21,8 @@ fn main() {
             state::set_channel,
             operations::install,
             operations::cancel_download,
-            operations::launch
+            operations::launch,
+            operations::uninstall
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Golden Launcher");

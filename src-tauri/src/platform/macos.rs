@@ -55,6 +55,7 @@ fn bundle(id: AppId, path: PathBuf) -> Option<(Installed, PathBuf)> {
     binary.is_file().then_some((
         Installed {
             version: found.into(),
+            can_uninstall: true,
             path,
         },
         binary,
@@ -317,6 +318,15 @@ pub fn launch(installed: &Installed) -> Result<(), String> {
         Command::new("/usr/bin/open").arg(&installed.path),
         "Could not open the installed app",
     )
+}
+
+pub fn uninstall(id: AppId, _: &Path, installed: &Installed) -> Result<InstallResult, String> {
+    if bundle(id, installed.path.clone()).is_none() {
+        return Err("The app bundle could not be verified.".into());
+    }
+    trash::delete(&installed.path)
+        .map_err(|error| format!("Could not move the app to Trash ({error})."))?;
+    Ok(InstallResult::Finished)
 }
 
 #[cfg(test)]

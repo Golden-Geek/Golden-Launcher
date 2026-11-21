@@ -16,23 +16,25 @@ export interface LauncherApp {
   availability: Availability;
   stale: boolean;
   refreshError: string | null;
-  installed: { version: string } | null;
+  installed: { version: string; canUninstall: boolean } | null;
   updateAvailable: boolean;
   available: { version: string; preview: boolean; notes: string[] } | null;
 }
 
 export interface InstallProgress {
   id: AppId;
-  stage: 'downloading' | 'verifying' | 'installing';
+  stage: 'downloading' | 'verifying' | 'installing' | 'uninstalling';
   downloaded: number;
   total: number | null;
 }
 
 export interface InstallOutcome {
-  kind: 'installed' | 'cancelled' | 'restartRequired' | 'failed';
+  kind: 'installed' | 'uninstalled' | 'cancelled' | 'restartRequired' | 'failed';
   message: string;
   retryGraphically: boolean;
 }
+
+export type CardOutcome = InstallOutcome & { retryInstall?: boolean };
 
 export const launcher = {
   library: () => invoke<LauncherApp[]>('library'),
@@ -42,6 +44,7 @@ export const launcher = {
     invoke<InstallOutcome>('install', { id, version, graphical }),
   cancel: (id: AppId) => invoke<boolean>('cancel_download', { id }),
   open: (id: AppId) => invoke<void>('launch', { id }),
+  uninstall: (id: AppId, version: string) => invoke<InstallOutcome>('uninstall', { id, version }),
   onProgress: (handler: (progress: InstallProgress) => void) =>
     listen<InstallProgress>('install-progress', ({ payload }) => handler(payload)),
 };

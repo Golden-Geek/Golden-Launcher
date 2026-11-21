@@ -83,6 +83,7 @@ enum Stage {
     Downloading,
     Verifying,
     Installing,
+    Uninstalling,
 }
 
 #[derive(Clone, Serialize)]
@@ -98,6 +99,7 @@ struct Progress {
 #[serde(rename_all = "camelCase")]
 enum ResultKind {
     Installed,
+    Uninstalled,
     Cancelled,
     RestartRequired,
     Failed,
@@ -275,6 +277,51 @@ pub async fn launch(app: AppHandle, id: AppId) -> Result<(), String> {
             .rescan_app(id)
             .ok_or("The installation could not be verified. Refresh the library.")?;
         platform::launch(&installed).map(|_| ())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn uninstall(app: AppHandle, id: AppId, version: String) -> Result<Outcome, String> {
+    let state = app.state::<Library>();
+    let (_hold, _) = state.operations.begin(id)?;
+    let _ = state.operations.finish_download();
+    let lock = lock_directory(&state.directory)?;
+    let work = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lock = lock;
+        let library = work.state::<Library>();
+        let installed = library
+            .rescan_app(id)
+            .filter(|installed| installed.version == version && installed.can_uninstall)
+            .ok_or("The selected installation changed or has no verified uninstaller.")?;
+        publish(&work, id, Stage::Uninstalling, 0, None);
+        let attempt = platform::uninstall(id, &library.directory, &installed);
+        let remains = library
+            .rescan_app(id)
+            .is_some_and(|app| app.path == installed.path);
+        let (kind, message) = match attempt {
+            Ok(InstallResult::Finished) if !remains => (
+                ResultKind::Uninstalled,
+                format!("Version {version} was uninstalled."),
+            ),
+            Ok(InstallResult::Finished) => (
+                ResultKind::Failed,
+                format!("Version {version} is still installed."),
+            ),
+            Ok(InstallResult::Cancelled) => (ResultKind::Cancelled, "Uninstall canceled.".into()),
+            Ok(InstallResult::RestartRequired) => (
+                ResultKind::RestartRequired,
+                "Restart your computer to finish uninstalling.".into(),
+            ),
+            Err(error) => (ResultKind::Failed, error),
+        };
+        Ok(Outcome {
+            kind,
+            message,
+            retry_graphically: false,
+        })
     })
     .await
     .map_err(|error| error.to_string())?
@@ -465,6 +512,7 @@ mod tests {
     fn installer_exit_requires_exact_verified_version_for_success() {
         let installed = Installed {
             version: "1.0.0".into(),
+            can_uninstall: true,
             path: "old-app".into(),
         };
         let verified = Some(&installed);

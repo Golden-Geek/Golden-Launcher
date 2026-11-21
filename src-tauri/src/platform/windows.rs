@@ -113,6 +113,7 @@ fn installed_exe(id: AppId, path: PathBuf) -> Option<Installed> {
     matches_name(id, &strings.product).then_some(Installed {
         path,
         version: version_from(&strings)?,
+        can_uninstall: false,
     })
 }
 
@@ -129,8 +130,8 @@ fn icon_to_path(value: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
-pub fn detect(id: AppId, _: &Path, _: Target) -> Option<Installed> {
-    let mut candidates = Vec::new();
+fn uninstall_entries(id: AppId) -> Vec<RegKey> {
+    let mut entries = Vec::new();
     let uninstaller_names = names(id)
         .iter()
         .flat_map(|name| [format!("{name}_is1"), (*name).to_owned()]);
@@ -142,23 +143,72 @@ pub fn detect(id: AppId, _: &Path, _: Target) -> Option<Installed> {
                 else {
                     continue;
                 };
-                if !key
+                if key
                     .get_value::<String, _>("DisplayName")
                     .is_ok_and(|display| matches_name(id, &display))
                 {
-                    continue;
+                    entries.push(key);
                 }
-                if let Ok(icon) = key.get_value::<String, _>("DisplayIcon")
-                    && let Some(path) = icon_to_path(&icon)
-                {
-                    candidates.push(path);
-                }
-                if let Ok(location) = key.get_value::<String, _>("InstallLocation") {
-                    let folder = Path::new(location.trim().trim_matches('"'));
-                    for name in names(id) {
-                        candidates.push(folder.join(format!("{name}.exe")));
-                    }
-                }
+            }
+        }
+    }
+    entries
+}
+
+fn uninstaller_path(command: &str) -> Option<PathBuf> {
+    let command = command.trim();
+    let path = if let Some(quoted) = command.strip_prefix('"') {
+        quoted.split_once('"')?.0
+    } else {
+        let lowercase = command.to_ascii_lowercase();
+        let offset = lowercase.match_indices(".exe").find_map(|(start, _)| {
+            let end = start + 4;
+            (lowercase
+                .as_bytes()
+                .get(end)
+                .is_none_or(u8::is_ascii_whitespace))
+            .then_some(end)
+        })?;
+        &command[..offset]
+    };
+    let path = PathBuf::from(path);
+    let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+    let inno = name
+        .strip_prefix("unins")
+        .and_then(|name| name.strip_suffix(".exe"))
+        .is_some_and(|number| {
+            !number.is_empty() && number.bytes().all(|byte| byte.is_ascii_digit())
+        });
+    (path.is_absolute() && (inno || name == "uninstall.exe")).then_some(path)
+}
+
+fn find_uninstaller(id: AppId, installed: &Installed) -> Option<PathBuf> {
+    let directory = working_directory(&installed.path).canonicalize().ok()?;
+    uninstall_entries(id)
+        .into_iter()
+        .filter_map(|key| key.get_value::<String, _>("UninstallString").ok())
+        .filter_map(|command| uninstaller_path(&command))
+        .find(|path| {
+            path.symlink_metadata()
+                .is_ok_and(|metadata| metadata.is_file())
+                && path
+                    .canonicalize()
+                    .is_ok_and(|path| path.parent() == Some(&directory))
+        })
+}
+
+pub fn detect(id: AppId, _: &Path, _: Target) -> Option<Installed> {
+    let mut candidates = Vec::new();
+    for key in uninstall_entries(id) {
+        if let Ok(icon) = key.get_value::<String, _>("DisplayIcon")
+            && let Some(path) = icon_to_path(&icon)
+        {
+            candidates.push(path);
+        }
+        if let Ok(location) = key.get_value::<String, _>("InstallLocation") {
+            let folder = Path::new(location.trim().trim_matches('"'));
+            for name in names(id) {
+                candidates.push(folder.join(format!("{name}.exe")));
             }
         }
     }
@@ -171,11 +221,13 @@ pub fn detect(id: AppId, _: &Path, _: Target) -> Option<Installed> {
     }
     candidates.sort();
     candidates.dedup();
-    newest(
+    let mut installed = newest(
         candidates
             .into_iter()
             .filter_map(|path| installed_exe(id, path)),
-    )
+    )?;
+    installed.can_uninstall = find_uninstaller(id, &installed).is_some();
+    Some(installed)
 }
 
 fn validate_installer(id: AppId, path: &Path, release: &Release) -> Result<(), String> {
@@ -222,15 +274,21 @@ fn run_installer(path: &Path, arguments: &OsStr) -> Result<InstallResult, String
     zone.push(":Zone.Identifier");
     fs::write(zone, "[ZoneTransfer]\r\nZoneId=3\r\n")
         .map_err(|error| format!("Could not mark the installer as downloaded ({error})."))?;
+    run_setup(path, arguments, "installer")
+}
+
+fn run_setup(path: &Path, arguments: &OsStr, label: &str) -> Result<InstallResult, String> {
     let file = wide(path.as_os_str());
     let verb = wide(OsStr::new("open"));
     let params = wide(arguments);
+    let directory = wide(working_directory(path).as_os_str());
     let mut info = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC,
         lpVerb: verb.as_ptr(),
         lpFile: file.as_ptr(),
         lpParameters: params.as_ptr(),
+        lpDirectory: directory.as_ptr(),
         nShow: SW_SHOWNORMAL,
         ..SHELLEXECUTEINFOW::default()
     };
@@ -240,10 +298,12 @@ fn run_installer(path: &Path, arguments: &OsStr) -> Result<InstallResult, String
         if error.raw_os_error() == Some(ERROR_CANCELLED as i32) {
             return Ok(InstallResult::Cancelled);
         }
-        return Err(format!("Could not start the Windows installer ({error})."));
+        return Err(format!("Could not start the Windows {label} ({error})."));
     }
     if info.hProcess.is_null() {
-        return Err("Windows did not provide an installer process to verify.".into());
+        return Err(format!(
+            "Windows did not provide a {label} process to verify."
+        ));
     }
     let mut code = 0;
     let read = unsafe {
@@ -253,7 +313,7 @@ fn run_installer(path: &Path, arguments: &OsStr) -> Result<InstallResult, String
         read
     };
     if !read {
-        return Err("Could not read the Windows installer result.".into());
+        return Err(format!("Could not read the Windows {label} result."));
     }
     installer_exit(code)
 }
@@ -263,7 +323,9 @@ fn installer_exit(code: u32) -> Result<InstallResult, String> {
         0 => Ok(InstallResult::Finished),
         2 | 5 | ERROR_CANCELLED | 1602 => Ok(InstallResult::Cancelled),
         1641 | 3010 => Ok(InstallResult::RestartRequired),
-        _ => Err(format!("The Windows installer exited with code {code}.")),
+        _ => Err(format!(
+            "The Windows setup program exited with code {code}."
+        )),
     }
 }
 
@@ -320,6 +382,12 @@ pub fn launch(installed: &Installed) -> Result<u32, String> {
         .map_err(|error| format!("Could not open the installed app ({error})."))
 }
 
+pub fn uninstall(id: AppId, _: &Path, installed: &Installed) -> Result<InstallResult, String> {
+    let path = find_uninstaller(id, installed)
+        .ok_or("Windows has no verified uninstaller for this installation.")?;
+    run_setup(&path, OsStr::new(""), "uninstaller")
+}
+
 #[cfg(test)]
 pub(crate) fn install_on_disposable_runner(
     id: AppId,
@@ -353,5 +421,21 @@ mod tests {
             Ok(InstallResult::Cancelled)
         ));
         assert!(installer_exit(1).is_err());
+    }
+
+    #[test]
+    fn reads_known_uninstall_paths_from_registry_strings() {
+        let inno = PathBuf::from(r"C:\Program Files\Chataigne\unins000.exe");
+        assert_eq!(
+            uninstaller_path(r#""C:\Program Files\Chataigne\unins000.exe" /SILENT"#),
+            Some(inno.clone())
+        );
+        assert_eq!(
+            uninstaller_path(r"C:\Program Files\Chataigne\unins000.exe"),
+            Some(inno)
+        );
+        assert!(uninstaller_path(r"C:\Program Files\App\uninstall.exe").is_some());
+        assert!(uninstaller_path(r"C:\Windows\msiexec.exe /X Anything").is_none());
+        assert!(uninstaller_path(r"unins000.exe").is_none());
     }
 }

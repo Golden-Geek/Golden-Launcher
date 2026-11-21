@@ -36,11 +36,11 @@ Once a distinct MapGyver 2 package ships, install it alongside MapGyver, open bo
 
 ## Window and version management
 
-**25%** `███░░░░░░░` · 1 of 4 follow-up milestones complete
+**50%** `█████░░░░░` · 2 of 4 follow-up milestones complete
 
 | Milestone | Status |
 |---|---|
 | Larger default window | Done · 1440 × 900 |
-| Uninstall installed apps | In progress |
-| Keep and open multiple installed versions | To do |
+| Uninstall installed apps | Done · confirmation and verification after removal |
+| Keep and open multiple installed versions | In progress |
 | Validate the updated launcher | To do |

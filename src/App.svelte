@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import AppCard from './AppCard.svelte';
-  import { launcher, type AppId, type Channel, type InstallOutcome, type InstallProgress, type LauncherApp } from './api';
+  import { launcher, type AppId, type CardOutcome, type Channel, type InstallProgress, type LauncherApp } from './api';
   import './styles.css';
 
   let apps = $state<LauncherApp[]>([]);
@@ -12,7 +12,7 @@
   let lastChecked = $state<Date>();
   let operation = $state<InstallProgress>();
   let canceling = $state(false);
-  let outcomes = $state<Partial<Record<AppId, InstallOutcome>>>({});
+  let outcomes = $state<Partial<Record<AppId, CardOutcome>>>({});
   let settingsPending = $state<Partial<Record<AppId, boolean>>>({});
   let opening = $state<Partial<Record<AppId, boolean>>>({});
   let updateNotice = $state('');
@@ -103,12 +103,12 @@
     operation = { id: app.id, stage: 'downloading', downloaded: 0, total: null };
     try {
       const result = await launcher.install(app.id, app.available.version, graphical);
-      outcomes[app.id] = result;
+      outcomes[app.id] = { ...result, retryInstall: result.kind === 'failed' || result.kind === 'cancelled' };
       if (view === 'updates' && result.kind === 'installed') {
         updateNotice = `${app.name} updated to ${app.available.version}.`;
       }
     } catch (reason) {
-      outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false };
+      outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false, retryInstall: true };
     } finally {
       await loadLibrary();
       canceling = false;
@@ -123,6 +123,23 @@
     } catch (reason) {
       canceling = false;
       error = message(reason);
+    }
+  }
+
+  async function uninstall(app: LauncherApp) {
+    if (!app.installed || operation) return;
+    updateNotice = '';
+    delete outcomes[app.id];
+    operation = { id: app.id, stage: 'uninstalling', downloaded: 0, total: null };
+    try {
+      const result = await launcher.uninstall(app.id, app.installed.version);
+      outcomes[app.id] = result;
+      if (view === 'updates' && result.kind === 'uninstalled') updateNotice = `${app.name} was uninstalled.`;
+    } catch (reason) {
+      outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false };
+    } finally {
+      await loadLibrary();
+      operation = undefined;
     }
   }
 
@@ -215,6 +232,7 @@
             onInstall={(graphical) => install(app, graphical)}
             onCancel={() => cancel(app.id)}
             onOpen={() => open(app)}
+            onUninstall={() => uninstall(app)}
           />
         {/each}
       </div>

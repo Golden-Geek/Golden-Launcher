@@ -72,8 +72,27 @@ pub fn detect(id: AppId, directory: &Path, target: Target) -> Option<Installed> 
     }
     (hex::encode(hasher.finalize()) == receipt.sha256).then_some(Installed {
         version: receipt.version,
+        can_uninstall: true,
         path,
     })
+}
+
+pub fn uninstall(
+    id: AppId,
+    directory: &Path,
+    installed: &Installed,
+) -> Result<InstallResult, String> {
+    let root = app_dir(directory, id);
+    let receipt =
+        active_receipt(&root, id).ok_or("The managed installation could not be verified.")?;
+    if image_path(&root, id, &receipt) != installed.path {
+        return Err("The managed installation changed. Refresh the library and try again.".into());
+    }
+    fs::remove_file(&installed.path)
+        .map_err(|error| format!("Could not remove the AppImage ({error})."))?;
+    let _ = fs::remove_file(root.join("current.json"));
+    let _ = fs::remove_dir(working_directory(&installed.path));
+    Ok(InstallResult::Finished)
 }
 
 pub fn install(
@@ -217,7 +236,13 @@ mod tests {
         let after = detect(id, dir.path(), target).unwrap();
         assert_eq!(before.path, after.path);
         assert_eq!(after.version, "1.0.0");
-        fs::write(after.path, [0; 64]).unwrap();
+        let unrelated = dir.path().join("user-project");
+        fs::write(&unrelated, b"project data").unwrap();
+        assert!(uninstall(AppId::BenTo, dir.path(), &after).is_err());
+        assert!(detect(id, dir.path(), target).is_some());
+        uninstall(id, dir.path(), &after).unwrap();
+        assert!(!after.path.exists());
         assert!(detect(id, dir.path(), target).is_none());
+        assert!(unrelated.exists());
     }
 }

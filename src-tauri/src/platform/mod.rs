@@ -6,15 +6,15 @@ mod macos;
 mod windows;
 
 #[cfg(target_os = "linux")]
-pub use linux::{detect, install, launch};
+pub use linux::{detect, install, launch, uninstall};
 #[cfg(all(test, target_os = "macos"))]
 pub(crate) use macos::validate_pkg;
 #[cfg(target_os = "macos")]
-pub use macos::{detect, install, launch};
+pub use macos::{detect, install, launch, uninstall};
 #[cfg(all(test, windows))]
 pub(crate) use windows::install_on_disposable_runner;
 #[cfg(windows)]
-pub use windows::{detect, install, launch};
+pub use windows::{detect, install, launch, uninstall};
 
 #[cfg(any(windows, target_os = "linux"))]
 use std::path::Path;
@@ -27,6 +27,8 @@ use crate::releases::version;
 #[derive(Clone, Serialize)]
 pub struct Installed {
     pub version: String,
+    #[serde(rename = "canUninstall")]
+    pub can_uninstall: bool,
     #[serde(skip)]
     pub path: PathBuf,
 }

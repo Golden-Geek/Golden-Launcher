@@ -137,6 +137,8 @@ h1:focus { outline: none; }
 .button:not(:disabled):hover { border-color: #6b5c45; background: #383229; }
 .button.primary { border-color: #e3b975; background: #e3b975; color: #241a10; padding-inline: 13px; }
 .button.primary:not(:disabled):hover { background: #f1cc92; border-color: #f1cc92; }
+.button.danger { background: #482e28; border-color: #815044; color: #f4bcad; }
+.button.danger:not(:disabled):hover { background: #5b372f; border-color: #a46858; }
 .button.refresh { min-height: 38px; padding-inline: 13px; }
 .button.refresh span { display: inline-block; font-size: 1.17rem; line-height: .9; }
 .spinning { animation: rotate 1.05s linear infinite; }
@@ -226,6 +228,8 @@ h1:focus { outline: none; }
 .notes li + li { margin-top: 4px; }
 .channel { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 10px; }
 .channel select { max-width: 100%; border: 1px solid #51483a; border-radius: 6px; padding: 4px 5px; background: #2b2721; color: #f1e6d5; }
+.manage-version { margin-top: 12px; }
+.manage-version p { padding-bottom: 5px; }
 
 .operation { margin: 0 0 12px; }
 .operation-label { display: flex; justify-content: space-between; margin-bottom: 5px; color: var(--gold); font-size: .75rem; }
