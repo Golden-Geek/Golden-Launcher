@@ -13,6 +13,35 @@ pub enum AppId {
     Lgml,
 }
 
+impl AppId {
+    pub fn slug(self) -> &'static str {
+        match self {
+            Self::Chataigne => "chataigne",
+            Self::Chataigne2 => "chataigne2",
+            Self::MapGyver => "map-gyver",
+            Self::MapGyver2 => "map-gyver2",
+            Self::Blux => "blux",
+            Self::BlinderKitten => "blinder-kitten",
+            Self::BenTo => "ben-to",
+            Self::Lgml => "lgml",
+        }
+    }
+
+    #[cfg(any(windows, target_os = "macos"))]
+    pub fn executable(self) -> &'static str {
+        match self {
+            Self::Chataigne => "Chataigne",
+            Self::Chataigne2 => "Chataigne2",
+            Self::MapGyver => "MapGyver",
+            Self::MapGyver2 => "MapGyver2",
+            Self::Blux => "Blux",
+            Self::BlinderKitten => "BlinderKitten",
+            Self::BenTo => "BenTo",
+            Self::Lgml => "LGML",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Serialize)]
 pub struct Product {
     pub id: AppId,

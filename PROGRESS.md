@@ -1,13 +1,13 @@
 # Golden Launcher progress
 
-**33%** `███░░░░░░░` · 2 of 6 milestones complete
+**50%** `█████░░░░░` · 3 of 6 milestones complete
 
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Tauri, Svelte and TypeScript foundation with an eight-app catalog | Done |
 | 2 | Publisher feeds, target resolution, versions, and offline cache | Done |
-| 3 | Download verification, installation, detection, and launch | Next |
-| 4 | Library, Updates, and inline operation controls | To do |
+| 3 | Download verification, installation, detection, and launch | Done |
+| 4 | Library, Updates, and inline operation controls | Next |
 | 5 | Automated checks and six-target CI packaging | To do |
 | 6 | Official install, update, and launch smoke tests on all six targets | To do |
 

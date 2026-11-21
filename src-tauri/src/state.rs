@@ -11,11 +11,13 @@ use std::{
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 use crate::{
     catalog::{AppId, PRODUCTS},
-    releases::{self, Channel, Resolved, Target},
+    operations::Operations,
+    platform::{self, Installed},
+    releases::{self, Channel, Release, Resolved, Target},
 };
 
 #[derive(Default, Deserialize, Serialize)]
@@ -29,13 +31,16 @@ struct SavedState {
 struct Session {
     saved: SavedState,
     fresh: HashMap<AppId, Result<(), String>>,
+    installed: HashMap<AppId, Installed>,
 }
 
 pub struct Library {
-    directory: PathBuf,
+    pub(crate) directory: PathBuf,
     pub(crate) client: Client,
     pub(crate) target: Target,
+    pub(crate) operations: Operations,
     session: Mutex<Session>,
+    scanning: Mutex<()>,
     refreshing: AtomicBool,
 }
 
@@ -50,16 +55,59 @@ impl Library {
             saved.releases.clear();
             saved.target = format!("{target:?}");
         }
-        Ok(Self {
+        let library = Self {
             directory,
             client: releases::client()?,
             target,
+            operations: Operations::default(),
             session: Mutex::new(Session {
                 saved,
-                fresh: HashMap::new(),
+                ..Session::default()
             }),
+            scanning: Mutex::new(()),
             refreshing: AtomicBool::new(false),
-        })
+        };
+        library.rescan();
+        Ok(library)
+    }
+
+    fn rescan(&self) {
+        let _scan = self.scanning.lock().expect("scan state");
+        let installed = PRODUCTS
+            .iter()
+            .filter_map(|product| {
+                platform::detect(product.id, &self.directory, self.target)
+                    .map(|app| (product.id, app))
+            })
+            .collect();
+        self.session.lock().expect("library state").installed = installed;
+    }
+
+    pub(crate) fn rescan_app(&self, id: AppId) -> Option<Installed> {
+        let _scan = self.scanning.lock().expect("scan state");
+        let found = platform::detect(id, &self.directory, self.target);
+        let mut session = self.session.lock().expect("library state");
+        if let Some(app) = &found {
+            session.installed.insert(id, app.clone());
+        } else {
+            session.installed.remove(&id);
+        }
+        found
+    }
+
+    pub(crate) fn selected_release(&self, id: AppId, requested: &str) -> Result<Release, String> {
+        let session = self.session.lock().expect("library state");
+        let channel = session.saved.channels.get(&id).copied().unwrap_or_default();
+        session
+            .saved
+            .releases
+            .get(&id)
+            .and_then(|builds| builds.for_channel(channel))
+            .filter(|release| release.version == requested)
+            .cloned()
+            .ok_or_else(|| {
+                "The selected release changed. Refresh the library and try again.".into()
+            })
     }
 
     pub(crate) fn snapshot(&self) -> Vec<AppView> {
@@ -72,6 +120,7 @@ impl Library {
                 let resolved = session.saved.releases.get(&id);
                 let freshness = session.fresh.get(&id);
                 let available = resolved.and_then(|builds| builds.for_channel(channel));
+                let installed = session.installed.get(&id);
                 let availability = match (available, resolved) {
                     (Some(_), _) => Availability::Available,
                     (None, Some(builds))
@@ -96,6 +145,10 @@ impl Library {
                     availability,
                     stale: resolved.is_some() && !matches!(freshness, Some(Ok(()))),
                     refresh_error: freshness.and_then(|result| result.as_ref().err()).cloned(),
+                    installed: installed.cloned(),
+                    update_available: installed.zip(available).is_some_and(|(app, release)| {
+                        releases::newer(&release.version, &app.version)
+                    }),
                     available: available.map(|release| ReleaseView {
                         version: release.version.clone(),
                         preview: release.preview,
@@ -151,6 +204,8 @@ pub struct AppView {
     availability: Availability,
     stale: bool,
     refresh_error: Option<String>,
+    installed: Option<Installed>,
+    update_available: bool,
     available: Option<ReleaseView>,
 }
 
@@ -168,11 +223,16 @@ impl Drop for RefreshGuard<'_> {
 }
 
 #[tauri::command]
-pub async fn refresh(state: State<'_, Library>) -> Result<Vec<AppView>, String> {
+pub async fn refresh(app: AppHandle) -> Result<Vec<AppView>, String> {
+    let state = app.state::<Library>();
     if state.refreshing.swap(true, Ordering::Acquire) {
         return Err("A refresh is already running.".into());
     }
     let _refresh = RefreshGuard(&state.refreshing);
+    let scan = app.clone();
+    tauri::async_runtime::spawn_blocking(move || scan.state::<Library>().rescan())
+        .await
+        .map_err(|error| error.to_string())?;
     let results = releases::refresh_all(&state.client, state.target).await;
     {
         let mut session = state.session.lock().expect("library state");

@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod catalog;
+mod operations;
+mod platform;
 mod releases;
 mod state;
 
@@ -22,7 +24,10 @@ fn main() {
             catalog,
             state::library,
             state::refresh,
-            state::set_channel
+            state::set_channel,
+            operations::install,
+            operations::cancel_download,
+            operations::launch
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Golden Launcher");
