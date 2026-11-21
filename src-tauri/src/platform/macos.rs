@@ -374,15 +374,15 @@ mod tests {
         fs::write(binary, b"fixture").unwrap();
         let fields = plist::Dictionary::from_iter([
             (
-                "CFBundleIdentifier".into(),
+                "CFBundleIdentifier",
                 plist::Value::String(bundle_id(id).into()),
             ),
             (
-                "CFBundleShortVersionString".into(),
+                "CFBundleShortVersionString",
                 plist::Value::String("1.10.4".into()),
             ),
             (
-                "CFBundleExecutable".into(),
+                "CFBundleExecutable",
                 plist::Value::String("Chataigne".into()),
             ),
         ]);
