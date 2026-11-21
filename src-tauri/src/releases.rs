@@ -21,6 +21,7 @@ pub enum Channel {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Target {
     WinX64,
+    WinArm64,
     MacIntel,
     MacSilicon,
     LinuxX64,
@@ -34,6 +35,7 @@ impl Target {
     pub fn current() -> Self {
         match (std::env::consts::OS, std::env::consts::ARCH) {
             ("windows", "x86_64") => Self::WinX64,
+            ("windows", "aarch64") => Self::WinArm64,
             ("macos", "x86_64") => Self::MacIntel,
             ("macos", "aarch64") => Self::MacSilicon,
             ("linux", "x86_64") => Self::LinuxX64,
@@ -46,6 +48,7 @@ impl Target {
     fn legacy_suffix(self) -> &'static str {
         match self {
             Self::WinX64 => "win-x64",
+            Self::WinArm64 => "win-arm64",
             Self::MacIntel => "osx-intel",
             Self::MacSilicon => "osx-silicon",
             Self::LinuxX64 => "linux-x64",
@@ -293,7 +296,9 @@ struct LegacyVersion {
 
 fn legacy_candidates(feed: LegacyFeed, source: Publisher, target: Target) -> (bool, Vec<Release>) {
     let kind = match target {
-        Target::WinX64 if feed.win.eq_ignore_ascii_case("exe") => Some(PackageKind::Inno),
+        Target::WinX64 | Target::WinArm64 if feed.win.eq_ignore_ascii_case("exe") => {
+            Some(PackageKind::Inno)
+        }
         Target::MacIntel | Target::MacSilicon if feed.mac.eq_ignore_ascii_case("pkg") => {
             Some(PackageKind::Pkg)
         }
@@ -316,6 +321,12 @@ fn legacy_candidates(feed: LegacyFeed, source: Publisher, target: Target) -> (bo
             let beta = entry.beta.as_bool() == Some(true) || entry.beta.as_str() == Some("true");
             (entry, beta)
         }));
+    let windows_arm_targets = [Target::WinArm64, Target::WinX64];
+    let package_targets = if target == Target::WinArm64 {
+        &windows_arm_targets[..]
+    } else {
+        std::slice::from_ref(&target)
+    };
     let mut published = false;
     let mut candidates = Vec::new();
     for (entry, beta) in versions {
@@ -326,33 +337,36 @@ fn legacy_candidates(feed: LegacyFeed, source: Publisher, target: Target) -> (bo
         };
         published = true;
         let Some(kind) = kind else { continue };
-        let filename = format!(
-            "{}-{}-{}.{}",
-            source.prefix,
-            target.legacy_suffix(),
-            entry.version,
-            kind.extension()
-        );
-        let sha256 = entry
-            .sha256
-            .get(&filename)
-            .or_else(|| entry.sha256.get(target.legacy_suffix()))
-            .cloned();
-        candidates.push(Release {
-            version: entry.version,
-            preview: beta || !parsed.pre.is_empty(),
-            notes: entry
-                .changelog
-                .into_iter()
-                .filter(|note| !note.trim().is_empty())
-                .collect(),
-            package: Package {
-                url: format!("{}{filename}", source.directory),
-                kind,
-                sha256,
-                size: None,
-            },
-        });
+        let notes: Vec<_> = entry
+            .changelog
+            .into_iter()
+            .filter(|note| !note.trim().is_empty())
+            .collect();
+        for package_target in package_targets {
+            let suffix = package_target.legacy_suffix();
+            let filename = format!(
+                "{}-{suffix}-{}.{}",
+                source.prefix,
+                entry.version,
+                kind.extension()
+            );
+            let sha256 = entry
+                .sha256
+                .get(&filename)
+                .or_else(|| entry.sha256.get(suffix))
+                .cloned();
+            candidates.push(Release {
+                version: entry.version.clone(),
+                preview: beta || !parsed.pre.is_empty(),
+                notes: notes.clone(),
+                package: Package {
+                    url: format!("{}{filename}", source.directory),
+                    kind,
+                    sha256,
+                    size: None,
+                },
+            });
+        }
     }
     (published, candidates)
 }
@@ -396,6 +410,7 @@ fn github_kind(filename: &str, expected: &Version, target: Target) -> Option<Pac
     let arch = stem.strip_prefix(&expected_name)?.strip_prefix('_')?;
     match (extension, arch, target) {
         ("exe", "x64_setup" | "x86_64_setup", Target::WinX64) => Some(PackageKind::Nsis),
+        ("exe", "arm64_setup" | "aarch64_setup", Target::WinArm64) => Some(PackageKind::Nsis),
         ("dmg", "x64" | "x86_64" | "intel" | "universal", Target::MacIntel) => {
             Some(PackageKind::Dmg)
         }
@@ -412,6 +427,18 @@ fn github_kind(filename: &str, expected: &Version, target: Target) -> Option<Pac
 }
 
 fn github_candidates(feed: &[GithubRelease], id: AppId, target: Target) -> (bool, Vec<Release>) {
+    let (published, mut candidates) = github_target_candidates(feed, id, target);
+    if target == Target::WinArm64 {
+        candidates.extend(github_target_candidates(feed, id, Target::WinX64).1);
+    }
+    (published, candidates)
+}
+
+fn github_target_candidates(
+    feed: &[GithubRelease],
+    id: AppId,
+    target: Target,
+) -> (bool, Vec<Release>) {
     let mut published = false;
     let mut candidates = Vec::new();
     for build in feed.iter().filter(|build| !build.draft) {
@@ -580,6 +607,12 @@ async fn resolve(
 
 #[cfg(test)]
 pub fn chataigne_smoke_release(version: &str, target: Target) -> Release {
+    // The pinned Windows smoke releases ship x64 installers.
+    let target = if target == Target::WinArm64 {
+        Target::WinX64
+    } else {
+        target
+    };
     let source = publisher(AppId::Chataigne).expect("Chataigne publisher");
     let kind = match target {
         Target::WinX64 => PackageKind::Inno,
@@ -707,6 +740,8 @@ mod tests {
     fn github_assets_match_product_version_and_architecture_independently() {
         let assets = [
             "Chataigne2_2.0.0-beta.3_x64-setup.exe",
+            "Chataigne2_2.0.0-beta.3_arm64-setup.exe",
+            "MapGyver2_2.0.0-beta.3_x64-setup.exe",
             "MapGyver_2.0.0-beta.3_x64-setup.exe",
             "MapGyver2_2.0.0-beta.3_aarch64.AppImage",
             "MapGyver2_1.9.0_armhf.AppImage",
@@ -731,11 +766,14 @@ mod tests {
                 .len(),
             1
         );
-        assert!(
-            github_candidates(&feed, AppId::MapGyver2, Target::WinX64)
-                .1
-                .is_empty()
-        );
+        let (_, mut arm_builds) = github_candidates(&feed, AppId::Chataigne2, Target::WinArm64);
+        arm_builds.sort_by(order);
+        assert_eq!(arm_builds.len(), 2);
+        assert!(arm_builds[0].package.url.ends_with("_arm64-setup.exe"));
+        assert!(arm_builds[1].package.url.ends_with("_x64-setup.exe"));
+        let (_, emulated) = github_candidates(&feed, AppId::MapGyver2, Target::WinArm64);
+        assert_eq!(emulated.len(), 1);
+        assert!(emulated[0].package.url.ends_with("_x64-setup.exe"));
         assert!(
             github_candidates(&feed, AppId::MapGyver2, Target::LinuxArmhf)
                 .1

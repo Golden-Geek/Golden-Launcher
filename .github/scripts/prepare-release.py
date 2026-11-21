@@ -14,6 +14,7 @@ from urllib.parse import quote
 # identify the installer format so Linux AppImages and .debs stay independent.
 PACKAGES = (
     ("windows-x86_64-nsis", "x86_64-pc-windows-msvc", "*-setup.exe"),
+    ("windows-aarch64-nsis", "aarch64-pc-windows-msvc", "*-setup.exe"),
     ("darwin-x86_64-app", "x86_64-apple-darwin", "*.app.tar.gz"),
     ("darwin-aarch64-app", "aarch64-apple-darwin", "*.app.tar.gz"),
     ("linux-x86_64-appimage", "x86_64-unknown-linux-gnu", "*.AppImage"),

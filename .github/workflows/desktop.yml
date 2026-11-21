@@ -42,6 +42,11 @@ jobs:
             runner: windows-2025
             target: x86_64-pc-windows-msvc
             bundles: nsis
+          - name: Windows ARM64
+            runner: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            toolchain_host: -aarch64-pc-windows-msvc
+            bundles: nsis
           - name: macOS Intel
             runner: macos-15-intel
             target: x86_64-apple-darwin
@@ -62,7 +67,7 @@ jobs:
           cache: npm
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: ${{ env.RUST_VERSION }}
+          toolchain: ${{ env.RUST_VERSION }}${{ matrix.toolchain_host }}
           targets: ${{ matrix.target }}
           components: rustfmt,clippy
       - name: Install Linux build dependencies
@@ -97,6 +102,26 @@ jobs:
             release_config=(--config src-tauri/tauri.release.conf.json)
           fi
           npm run tauri -- build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" "${release_config[@]}" -- --locked
+      - name: Install and launch the native ARM64 package
+        if: matrix.target == 'aarch64-pc-windows-msvc'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem 'src-tauri/target/aarch64-pc-windows-msvc/release/bundle/nsis/*-setup.exe'
+          if (@($installer).Count -ne 1) { throw 'Expected one ARM64 NSIS installer.' }
+          $installDir = Join-Path $env:RUNNER_TEMP 'golden-launcher-arm64'
+          $setup = Start-Process -FilePath $installer.FullName -ArgumentList '/S', "/D=$installDir" -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0) { throw "ARM64 setup exited with code $($setup.ExitCode)." }
+          $binary = Join-Path $installDir 'golden-launcher.exe'
+          $bytes = [IO.File]::ReadAllBytes($binary)
+          $pe = [BitConverter]::ToInt32($bytes, 60)
+          $machine = [BitConverter]::ToUInt16($bytes, $pe + 4)
+          if ($machine -ne 0xaa64) { throw 'The installed executable must be native ARM64.' }
+          $launcher = Start-Process -FilePath $binary -WindowStyle Hidden -PassThru
+          try {
+            if ($launcher.WaitForExit(8000)) { throw "Golden Launcher exited with code $($launcher.ExitCode)." }
+          } finally {
+            if (!$launcher.HasExited) { Stop-Process -Id $launcher.Id }
+          }
       - uses: actions/upload-artifact@v7
         with:
           name: golden-launcher-${{ matrix.target }}
