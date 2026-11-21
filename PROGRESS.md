@@ -33,3 +33,14 @@ The Linux x64 Debian package also started the Golden Launcher window under Xvfb.
 On each remaining desktop, start with no Chataigne installation. Install Chataigne from Stable, verify the installed version, then enable Preview and update. Verify that the installed version increased and that **Open** starts the app. Switch to Stable and confirm that the launcher offers **Open** with the installed Preview version. Disconnect the network, refresh to check the cached status, and open the app again.
 
 Once a distinct MapGyver 2 package ships, install it alongside MapGyver, open both apps, then update MapGyver 2 and confirm that MapGyver still opens at its previous version.
+
+## Window and version management
+
+**25%** `███░░░░░░░` · 1 of 4 follow-up milestones complete
+
+| Milestone | Status |
+|---|---|
+| Larger default window | Done · 1440 × 900 |
+| Uninstall installed apps | In progress |
+| Keep and open multiple installed versions | To do |
+| Validate the updated launcher | To do |

@@ -15,8 +15,9 @@
       {
         "label": "main",
         "title": "Golden Launcher",
-        "width": 1180,
-        "height": 780,
+        "width": 1440,
+        "height": 900,
+        "center": true,
         "minWidth": 580,
         "minHeight": 520,
         "theme": "Dark",
