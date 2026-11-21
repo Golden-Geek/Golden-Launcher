@@ -104,6 +104,7 @@ jobs:
     timeout-minutes: 40
     env:
       GOLDEN_ARM_RUNTIME_SMOKE: "${{ inputs.arm_runtime_smoke && 'true' || 'false' }}"
+      QEMU_IMAGE: tonistiigi/binfmt@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
     strategy:
       fail-fast: false
       matrix:
@@ -123,6 +124,7 @@ jobs:
       - uses: docker/setup-qemu-action@v3
         if: matrix.arch == 'armhf'
         with:
+          image: ${{ env.QEMU_IMAGE }}
           platforms: arm
       - uses: actions/cache@v5
         with:
@@ -212,6 +214,17 @@ jobs:
           path: src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: error
           retention-days: 14
+      - name: Register ARM AppImages with the runner's QEMU interpreter
+        if: inputs.arm_runtime_smoke && matrix.arch == 'armhf'
+        run: |
+          emulator="$(docker create "$QEMU_IMAGE")"
+          trap 'docker rm "$emulator" >/dev/null' EXIT
+          docker cp "$emulator:/usr/bin/qemu-arm" "$RUNNER_TEMP/qemu-arm"
+          # Type 2 AppImages put AI\x02 in ELF padding bytes matched by the ordinary QEMU rule.
+          magic='\x7f\x45\x4c\x46\x01\x01\x01\x00\x41\x49\x02\x00\x00\x00\x00\x00\x02\x00\x28\x00'
+          mask='\xff\xff\xff\xff\xff\xff\xff\x00\xff\xff\xff\xff\xff\xff\xff\xff\xfe\xff\xff\xff'
+          printf '%s\n' ":qemu-arm-appimage:M::$magic:$mask:$RUNNER_TEMP/qemu-arm:POCF" |
+            sudo tee /proc/sys/fs/binfmt_misc/register >/dev/null
       - name: Exercise the package and publisher runtime on ARM Debian
         if: inputs.arm_runtime_smoke
         env:
