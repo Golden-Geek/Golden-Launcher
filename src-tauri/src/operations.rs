@@ -274,7 +274,7 @@ pub async fn launch(app: AppHandle, id: AppId) -> Result<(), String> {
         let installed = state
             .rescan_app(id)
             .ok_or("The installation could not be verified. Refresh the library.")?;
-        platform::launch(&installed)
+        platform::launch(&installed).map(|_| ())
     })
     .await
     .map_err(|error| error.to_string())?
@@ -513,5 +513,98 @@ mod tests {
         let path = temp.path().join("invalid.AppImage");
         fs::write(&path, [0u8; 64]).unwrap();
         assert!(validate_package(&path, PackageKind::AppImage, Target::LinuxX64).is_err());
+    }
+
+    #[test]
+    #[ignore = "downloads official packages and installs on a disposable desktop"]
+    fn official_chataigne_platform_smoke() {
+        assert_eq!(std::env::var("GOLDEN_DISPOSABLE_SMOKE").as_deref(), Ok("1"));
+        let id = AppId::Chataigne;
+        let target = Target::current();
+        let work = tempfile::tempdir().unwrap();
+        let client = releases::client().unwrap();
+        #[cfg(not(target_os = "macos"))]
+        assert!(
+            platform::detect(id, work.path(), target).is_none(),
+            "use a fresh test environment without Chataigne"
+        );
+
+        for version in ["1.10.4", "1.10.5b14"] {
+            let release = releases::chataigne_smoke_release(version, target);
+            let path = work.path().join(format!(
+                "Chataigne-{}.{}",
+                release.version,
+                release.package.kind.extension()
+            ));
+            let digest =
+                tauri::async_runtime::block_on(download(&client, id, &release, &path, |_, _| {}))
+                    .unwrap();
+            validate_package(&path, release.package.kind, target).unwrap();
+            #[cfg(target_os = "macos")]
+            {
+                let _ = digest;
+                platform::validate_pkg(id, &path, &release, target).unwrap();
+                println!(
+                    "Verified official Chataigne {version} package identity and architecture."
+                );
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
+                let result =
+                    platform::install(id, work.path(), &path, &release, &digest, false, target)
+                        .unwrap();
+                assert!(matches!(result, InstallResult::Finished));
+                let found = platform::detect(id, work.path(), target).expect("installed Chataigne");
+                assert!(same_version(&found.version, version));
+                println!(
+                    "Verified installed Chataigne {} at {}",
+                    found.version,
+                    found.path.display()
+                );
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let installed = platform::detect(id, work.path(), target).expect("updated Chataigne");
+            let pid = platform::launch(&installed).unwrap();
+            let found = (0..20).any(|_| {
+                std::thread::sleep(Duration::from_millis(500));
+                chataigne_running(pid)
+            });
+            assert!(found, "Chataigne process did not start");
+            std::thread::sleep(Duration::from_secs(2));
+            assert!(chataigne_running(pid), "Chataigne quit during launch");
+            println!("Launched Chataigne {} (PID {pid}).", installed.version);
+            stop_smoke_app(pid);
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn chataigne_running(pid: u32) -> bool {
+        fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "Chataigne")
+    }
+
+    #[cfg(windows)]
+    fn chataigne_running(pid: u32) -> bool {
+        std::process::Command::new("tasklist.exe")
+            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+            .output()
+            .is_ok_and(|output| {
+                String::from_utf8_lossy(&output.stdout).contains("\"Chataigne.exe\"")
+            })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn stop_smoke_app(pid: u32) {
+        let _ = std::process::Command::new("kill")
+            .arg(pid.to_string())
+            .status();
+    }
+
+    #[cfg(windows)]
+    fn stop_smoke_app(pid: u32) {
+        let _ = std::process::Command::new("taskkill.exe")
+            .args(["/PID", &pid.to_string()])
+            .status();
     }
 }

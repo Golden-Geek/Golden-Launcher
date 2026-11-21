@@ -115,10 +115,14 @@ pub fn appimage_header(bytes: &[u8], target: Target) -> bool {
         Target::LinuxArmhf => (1, 40),
         _ => return false,
     };
+    let arm_float_abi = bytes
+        .get(36..40)
+        .map(|flags| u32::from_le_bytes(flags.try_into().unwrap()) & 0x600);
     bytes.starts_with(b"\x7fELF")
         && bytes.get(4..7) == Some(&[class, 1, 1])
         && bytes.get(8..11) == Some(b"AI\x02")
         && bytes.get(18..20) == Some(&[machine, 0])
+        && !(target == Target::LinuxArmhf && arm_float_abi == Some(0x200))
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -496,7 +500,7 @@ async fn probe(
     let url = check_package_source(id, package)?;
     let mut response = client
         .get(url)
-        .header(header::RANGE, "bytes=0-31")
+        .header(header::RANGE, "bytes=0-63")
         .timeout(Duration::from_secs(12))
         .send()
         .await
@@ -514,12 +518,12 @@ async fn probe(
     {
         return Ok(false);
     }
-    let mut prefix = Vec::with_capacity(32);
-    while prefix.len() < 32 {
+    let mut prefix = Vec::with_capacity(64);
+    while prefix.len() < 64 {
         let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? else {
             break;
         };
-        prefix.extend_from_slice(&chunk[..chunk.len().min(32 - prefix.len())]);
+        prefix.extend_from_slice(&chunk[..chunk.len().min(64 - prefix.len())]);
     }
     Ok(package.kind.matches_prefix(&prefix, target))
 }
@@ -572,6 +576,33 @@ async fn resolve(
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+pub fn chataigne_smoke_release(version: &str, target: Target) -> Release {
+    let source = publisher(AppId::Chataigne).expect("Chataigne publisher");
+    let kind = match target {
+        Target::WinX64 => PackageKind::Inno,
+        Target::MacIntel | Target::MacSilicon => PackageKind::Pkg,
+        Target::LinuxX64 | Target::LinuxArm64 | Target::LinuxArmhf => PackageKind::AppImage,
+        _ => panic!("unsupported smoke-test target"),
+    };
+    Release {
+        version: version.into(),
+        preview: version.contains('b'),
+        notes: Vec::new(),
+        package: Package {
+            url: format!(
+                "{}Chataigne-{}-{version}.{}",
+                source.directory,
+                target.legacy_suffix(),
+                kind.extension()
+            ),
+            kind,
+            sha256: None,
+            size: None,
+        },
+    }
 }
 
 pub async fn refresh_all(
@@ -718,12 +749,14 @@ mod tests {
 
     #[test]
     fn appimage_probe_checks_elf_architecture_and_rejects_html() {
-        let mut header = [0; 32];
+        let mut header = [0; 64];
         header[..7].copy_from_slice(b"\x7fELF\x01\x01\x01");
         header[8..11].copy_from_slice(b"AI\x02");
         header[18] = 40;
         assert!(PackageKind::AppImage.matches_prefix(&header, Target::LinuxArmhf));
         assert!(!PackageKind::AppImage.matches_prefix(&header, Target::LinuxArm64));
+        header[36..40].copy_from_slice(&0x0500_0200u32.to_le_bytes());
+        assert!(!PackageKind::AppImage.matches_prefix(&header, Target::LinuxArmhf));
         assert!(!PackageKind::Inno.matches_prefix(b"<html>", Target::WinX64));
     }
 

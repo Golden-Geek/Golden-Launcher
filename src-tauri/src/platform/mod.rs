@@ -7,6 +7,8 @@ mod windows;
 
 #[cfg(target_os = "linux")]
 pub use linux::{detect, install, launch};
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) use macos::validate_pkg;
 #[cfg(target_os = "macos")]
 pub use macos::{detect, install, launch};
 #[cfg(windows)]

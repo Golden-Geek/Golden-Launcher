@@ -145,7 +145,12 @@ fn quarantine(path: &Path) -> Result<(), String> {
     )
 }
 
-fn validate_pkg(id: AppId, path: &Path, release: &Release, target: Target) -> Result<(), String> {
+pub(crate) fn validate_pkg(
+    id: AppId,
+    path: &Path,
+    release: &Release,
+    target: Target,
+) -> Result<(), String> {
     if id == AppId::MapGyver2 {
         return Err(
             "MapGyver 2 requires a disk image with its own bundle identity and destination.".into(),

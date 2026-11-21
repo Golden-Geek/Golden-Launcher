@@ -138,17 +138,18 @@ fn fuse_available() -> bool {
         && unsafe { libloading::Library::new("libfuse.so.2") }.is_ok()
 }
 
-pub fn launch(installed: &Installed) -> Result<(), String> {
+pub fn launch(installed: &Installed) -> Result<u32, String> {
     let path = &installed.path;
     if fuse_available() {
         let mut child = Command::new(path)
             .current_dir(working_directory(path))
             .spawn()
             .map_err(|error| format!("Could not open the AppImage ({error})."))?;
+        let pid = child.id();
         std::thread::spawn(move || {
             let _ = child.wait();
         });
-        return Ok(());
+        return Ok(pid);
     }
 
     // Type 2 runtimes support extracting themselves, including ones that predate extract-and-run.
@@ -169,11 +170,12 @@ pub fn launch(installed: &Installed) -> Result<(), String> {
         .env("APPIMAGE", path)
         .spawn()
         .map_err(|error| format!("Could not open the extracted AppImage ({error})."))?;
+    let pid = child.id();
     std::thread::spawn(move || {
         let _ = child.wait();
         drop(extracted);
     });
-    Ok(())
+    Ok(pid)
 }
 
 #[cfg(test)]

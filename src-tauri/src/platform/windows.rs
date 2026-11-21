@@ -311,11 +311,11 @@ pub fn install(
     run_installer(path, &arguments)
 }
 
-pub fn launch(installed: &Installed) -> Result<(), String> {
+pub fn launch(installed: &Installed) -> Result<u32, String> {
     Command::new(&installed.path)
         .current_dir(working_directory(&installed.path))
         .spawn()
-        .map(|_| ())
+        .map(|child| child.id())
         .map_err(|error| format!("Could not open the installed app ({error})."))
 }
 
