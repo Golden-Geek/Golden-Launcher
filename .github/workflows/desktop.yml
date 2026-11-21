@@ -7,6 +7,11 @@ on:
   pull_request:
     paths-ignore: ["**/*.md"]
   workflow_dispatch:
+    inputs:
+      arm_runtime_smoke:
+        description: Exercise official Chataigne packages on ARM Debian
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -96,7 +101,9 @@ jobs:
   raspberry-pi:
     name: Raspberry Pi OS ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 35
+    timeout-minutes: 40
+    env:
+      GOLDEN_ARM_RUNTIME_SMOKE: "${{ inputs.arm_runtime_smoke && 'true' || 'false' }}"
     strategy:
       fail-fast: false
       matrix:
@@ -105,10 +112,12 @@ jobs:
             deb_arch: arm64
             runner: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
+            platform: linux/arm64
           - arch: armhf
             deb_arch: armhf
             runner: ubuntu-24.04
             target: armv7-unknown-linux-gnueabihf
+            platform: linux/arm/v7
     steps:
       - uses: actions/checkout@v7
       - uses: docker/setup-qemu-action@v3
@@ -140,17 +149,19 @@ jobs:
           test -f "$sysroot/usr/lib/arm-linux-gnueabihf/libdbus-1.so"
       - name: Cross-compile the armhf Debian package
         if: matrix.arch == 'armhf'
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           mkdir -p "$RUNNER_TEMP/golden-arm/cargo"
           docker run --rm --platform linux/amd64 -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             -v "$RUNNER_TEMP/armhf-sysroot:/opt/armhf-sysroot:ro" \
             -v "$RUNNER_TEMP/golden-arm/cargo:/opt/golden-cargo" \
-            -e CARGO_HOME=/opt/golden-cargo -e RUST_VERSION -e CI \
+            -e CARGO_HOME=/opt/golden-cargo -e RUST_VERSION -e CI -e TARGET -e GOLDEN_ARM_RUNTIME_SMOKE \
             -e DEBIAN_FRONTEND=noninteractive node:22-bookworm bash -euo pipefail -c '
               apt-get -o Acquire::Retries=3 update
               apt-get install -y --no-install-recommends crossbuild-essential-armhf pkg-config
               curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs |
-                sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --target armv7-unknown-linux-gnueabihf --no-modify-path
+                sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --target "$TARGET" --no-modify-path
               export PATH="$CARGO_HOME/bin:$PATH"
               export PKG_CONFIG_ALLOW_CROSS=1
               export PKG_CONFIG_SYSROOT_DIR=/opt/armhf-sysroot
@@ -159,7 +170,10 @@ jobs:
               chmod +x /tmp/link-armhf
               export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=/tmp/link-armhf
               npm ci
-              npm run tauri -- build --ci --target armv7-unknown-linux-gnueabihf --bundles deb -- --locked
+              npm run tauri -- build --ci --target "$TARGET" --bundles deb -- --locked
+              if [ "$GOLDEN_ARM_RUNTIME_SMOKE" = true ]; then
+                bash .github/scripts/build-arm-smoke.sh "$TARGET"
+              fi
             '
       - name: Build the aarch64 Debian package on Bookworm
         if: matrix.arch == 'aarch64'
@@ -171,7 +185,7 @@ jobs:
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             -v "$RUNNER_TEMP/golden-arm/cargo:/opt/golden-cargo" \
             -e CARGO_HOME=/opt/golden-cargo -e CARGO_BUILD_JOBS=2 \
-            -e TARGET -e RUST_VERSION -e CI \
+            -e TARGET -e RUST_VERSION -e CI -e GOLDEN_ARM_RUNTIME_SMOKE \
             -e DEBIAN_FRONTEND=noninteractive node:22-bookworm bash -euo pipefail -c '
               apt-get -o Acquire::Retries=3 update
               apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev
@@ -180,6 +194,9 @@ jobs:
               export PATH="$CARGO_HOME/bin:$PATH"
               npm ci
               npm run tauri -- build --ci --target "$TARGET" --bundles deb -- --locked
+              if [ "$GOLDEN_ARM_RUNTIME_SMOKE" = true ]; then
+                bash .github/scripts/build-arm-smoke.sh "$TARGET"
+              fi
             '
       - name: Check the Debian package architecture
         env:
@@ -195,3 +212,21 @@ jobs:
           path: src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
           if-no-files-found: error
           retention-days: 14
+      - name: Exercise the package and publisher runtime on ARM Debian
+        if: inputs.arm_runtime_smoke
+        env:
+          TARGET: ${{ matrix.target }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          docker run --rm --platform "$PLATFORM" -v "$GITHUB_WORKSPACE:/workspace:ro" -w /workspace \
+            -e TARGET -e GOLDEN_DISPOSABLE_SMOKE=1 -e DEBIAN_FRONTEND=noninteractive \
+            debian:bookworm bash -euo pipefail -c '
+              build="/workspace/src-tauri/target/$TARGET/release"
+              packages=("$build"/bundle/deb/*.deb)
+              test "${#packages[@]}" = 1
+              test -f "${packages[0]}"
+              apt-get -o Acquire::Retries=3 update
+              apt-get install -y --no-install-recommends "${packages[0]}" xvfb xauth libcurl4 libgcrypt20 libsystemd0 libjack-jackd2-0 libpipewire-0.3-0 libpulse0 libgl1-mesa-dri
+              test -x /usr/bin/golden-launcher
+              xvfb-run -a "$build/publisher-smoke" official_chataigne_platform_smoke --ignored --nocapture
+            '

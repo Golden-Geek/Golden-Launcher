@@ -711,7 +711,18 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     fn chataigne_running(pid: u32) -> bool {
-        fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "Chataigne")
+        let Ok(name) = fs::read_to_string(format!("/proc/{pid}/comm")) else {
+            return false;
+        };
+        if name.trim() == "Chataigne" {
+            return true;
+        }
+        name.starts_with("qemu-arm")
+            && fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|arguments| {
+                arguments
+                    .split(|byte| *byte == 0)
+                    .any(|argument| argument.ends_with(b"/Chataigne"))
+            })
     }
 
     #[cfg(windows)]
