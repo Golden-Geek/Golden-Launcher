@@ -1,7 +1,7 @@
 use std::{
     ffi::OsStr,
     fs, io,
-    os::windows::ffi::OsStrExt,
+    os::windows::{ffi::OsStrExt, fs::MetadataExt},
     path::{Path, PathBuf},
     process::Command,
 };
@@ -28,7 +28,7 @@ use crate::{
     releases::{PackageKind, Release, Target, version},
 };
 
-use super::{InstallResult, Installed, newest, same_version, working_directory};
+use super::{InstallResult, Installed, Origin, newest, same_version, working_directory};
 
 const UNINSTALL: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 const INNO_QUIET_ARGS: &str = "/VERYSILENT /SP- /NORESTART /RESTARTEXITCODE=3010";
@@ -114,6 +114,7 @@ fn installed_exe(id: AppId, path: PathBuf) -> Option<Installed> {
         path,
         version: version_from(&strings)?,
         can_uninstall: false,
+        origin: Origin::Native,
     })
 }
 
@@ -386,6 +387,49 @@ pub fn uninstall(id: AppId, _: &Path, installed: &Installed) -> Result<InstallRe
     let path = find_uninstaller(id, installed)
         .ok_or("Windows has no verified uninstaller for this installation.")?;
     run_setup(&path, OsStr::new(""), "uninstaller")
+}
+
+pub fn can_retain(id: AppId, installed: &Installed) -> bool {
+    let directory = working_directory(&installed.path);
+    directory
+        .file_name()
+        .and_then(OsStr::to_str)
+        .is_some_and(|name| matches_name(id, name))
+        && directory
+            .symlink_metadata()
+            .is_ok_and(|metadata| metadata.is_dir() && metadata.file_attributes() & 0x400 == 0)
+}
+
+pub fn read_copy(id: AppId, directory: &Path) -> Option<Installed> {
+    names(id)
+        .iter()
+        .find_map(|name| installed_exe(id, directory.join(format!("{name}.exe"))))
+}
+
+pub fn copy_installed(_: AppId, installed: &Installed, directory: &Path) -> Result<(), String> {
+    copy_tree(working_directory(&installed.path), directory)
+        .map_err(|error| format!("Could not copy the installed app ({error})."))
+}
+
+fn copy_tree(source: &Path, destination: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        if uninstaller_path(entry.path().to_string_lossy().as_ref()).is_some() {
+            continue;
+        }
+        let metadata = entry.path().symlink_metadata()?;
+        if metadata.file_attributes() & 0x400 != 0 {
+            return Err(io::Error::other("the installation contains linked files"));
+        }
+        let target = destination.join(entry.file_name());
+        if metadata.is_dir() {
+            fs::create_dir(&target)?;
+            copy_tree(&entry.path(), &target)?;
+        } else if metadata.is_file() {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

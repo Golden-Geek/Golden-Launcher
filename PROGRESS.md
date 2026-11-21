@@ -13,7 +13,7 @@
 
 Each milestone counts equally. The smoke-test milestone includes Raspberry Pi OS hardware for both architectures and a coexistence check once a qualifying MapGyver 2 package is available.
 
-**CI packages** 100% `██████████` · 6 of 6 targets. The armhf Debian package was checked with `dpkg-deb`. [Desktop artifacts](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44913372437) · [armhf artifact](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44917066709)
+**CI packages** 100% `██████████` · 6 of 6 targets in one run. The Raspberry Pi packages were checked with `dpkg-deb`. [Desktop artifacts](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44917794553)
 
 ## Publisher smoke tests
 
@@ -36,11 +36,11 @@ Once a distinct MapGyver 2 package ships, install it alongside MapGyver, open bo
 
 ## Window and version management
 
-**50%** `█████░░░░░` · 2 of 4 follow-up milestones complete
+**75%** `████████░░` · 3 of 4 follow-up milestones complete
 
 | Milestone | Status |
 |---|---|
 | Larger default window | Done · 1440 × 900 |
 | Uninstall installed apps | Done · confirmation and verification after removal |
-| Keep and open multiple installed versions | In progress |
-| Validate the updated launcher | To do |
+| Keep and open multiple installed versions | Done · per-version Open and Uninstall |
+| Validate the updated launcher | In progress · Linux x64 opened both official versions and removed the older one |

@@ -16,7 +16,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::{
     catalog::{AppId, PRODUCTS},
     operations::Operations,
-    platform::{self, Installed},
+    platform::{self, Installed, Origin, same_version},
     releases::{self, Channel, Release, Resolved, Target},
 };
 
@@ -31,7 +31,7 @@ struct SavedState {
 struct Session {
     saved: SavedState,
     fresh: HashMap<AppId, Result<(), String>>,
-    installed: HashMap<AppId, Installed>,
+    installed: HashMap<AppId, Vec<Installed>>,
 }
 
 pub struct Library {
@@ -75,23 +75,24 @@ impl Library {
         let _scan = self.scanning.lock().expect("scan state");
         let installed = PRODUCTS
             .iter()
-            .filter_map(|product| {
-                platform::detect(product.id, &self.directory, self.target)
-                    .map(|app| (product.id, app))
+            .map(|product| {
+                (
+                    product.id,
+                    platform::installed_versions(product.id, &self.directory, self.target),
+                )
             })
             .collect();
         self.session.lock().expect("library state").installed = installed;
     }
 
-    pub(crate) fn rescan_app(&self, id: AppId) -> Option<Installed> {
+    pub(crate) fn rescan_app(&self, id: AppId) -> Vec<Installed> {
         let _scan = self.scanning.lock().expect("scan state");
-        let found = platform::detect(id, &self.directory, self.target);
-        let mut session = self.session.lock().expect("library state");
-        if let Some(app) = &found {
-            session.installed.insert(id, app.clone());
-        } else {
-            session.installed.remove(&id);
-        }
+        let found = platform::installed_versions(id, &self.directory, self.target);
+        self.session
+            .lock()
+            .expect("library state")
+            .installed
+            .insert(id, found.clone());
         found
     }
 
@@ -120,7 +121,21 @@ impl Library {
                 let resolved = session.saved.releases.get(&id);
                 let freshness = session.fresh.get(&id);
                 let available = resolved.and_then(|builds| builds.for_channel(channel));
-                let installed = session.installed.get(&id);
+                let installed = session.installed.get(&id).map_or(&[][..], Vec::as_slice);
+                let installed_versions: Vec<_> = installed
+                    .iter()
+                    .map(|app| InstalledView {
+                        key: app.key(),
+                        version: app.version.clone(),
+                        origin: app.origin,
+                        can_uninstall: app.can_uninstall,
+                        can_retain: platform::can_retain(id, app)
+                            && !installed.iter().any(|copy| {
+                                copy.origin == Origin::RetainedCopy
+                                    && same_version(&copy.version, &app.version)
+                            }),
+                    })
+                    .collect();
                 let availability = match (available, resolved) {
                     (Some(_), _) => Availability::Available,
                     (None, Some(builds))
@@ -145,10 +160,10 @@ impl Library {
                     availability,
                     stale: resolved.is_some() && !matches!(freshness, Some(Ok(()))),
                     refresh_error: freshness.and_then(|result| result.as_ref().err()).cloned(),
-                    installed: installed.cloned(),
-                    update_available: installed.zip(available).is_some_and(|(app, release)| {
-                        releases::newer(&release.version, &app.version)
-                    }),
+                    installed: installed_versions.first().cloned(),
+                    installed_versions,
+                    install_action: available
+                        .and_then(|release| install_action(release, installed)),
                     available: available.map(|release| ReleaseView {
                         version: release.version.clone(),
                         preview: release.preview,
@@ -163,6 +178,36 @@ impl Library {
         write_json(&self.directory.join("library.json"), saved)
             .map_err(|error| format!("Could not save launcher data ({error})."))
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstallAction {
+    Install,
+    Update,
+    Alongside,
+}
+
+pub(crate) fn install_action(release: &Release, installed: &[Installed]) -> Option<InstallAction> {
+    let Some(current) = installed.first() else {
+        return Some(InstallAction::Install);
+    };
+    if installed
+        .iter()
+        .any(|app| same_version(&release.version, &app.version))
+    {
+        return None;
+    }
+    if installed
+        .iter()
+        .all(|app| app.origin == Origin::RetainedCopy)
+    {
+        return Some(InstallAction::Alongside);
+    }
+    if releases::newer(&release.version, &current.version) {
+        return Some(InstallAction::Update);
+    }
+    (current.origin == Origin::AppImage).then_some(InstallAction::Alongside)
 }
 
 pub(crate) fn write_json(path: &Path, value: &impl Serialize) -> io::Result<()> {
@@ -194,6 +239,16 @@ pub struct ReleaseView {
     notes: Vec<String>,
 }
 
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct InstalledView {
+    key: String,
+    version: String,
+    origin: Origin,
+    can_uninstall: bool,
+    can_retain: bool,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppView {
@@ -204,8 +259,9 @@ pub struct AppView {
     availability: Availability,
     stale: bool,
     refresh_error: Option<String>,
-    installed: Option<Installed>,
-    update_available: bool,
+    installed: Option<InstalledView>,
+    installed_versions: Vec<InstalledView>,
+    install_action: Option<InstallAction>,
     available: Option<ReleaseView>,
 }
 
@@ -266,4 +322,45 @@ pub fn set_channel(
         }
     }
     Ok(state.snapshot())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn alongside_installation_does_not_downgrade_a_native_install() {
+        let mut installed = Installed {
+            version: "1.10.5b14".into(),
+            can_uninstall: true,
+            path: "installed".into(),
+            origin: Origin::Native,
+        };
+        let stable = releases::chataigne_smoke_release("1.10.4", Target::WinX64);
+        assert_eq!(install_action(&stable, &[]), Some(InstallAction::Install));
+        assert_eq!(
+            install_action(&stable, std::slice::from_ref(&installed)),
+            None
+        );
+        installed.origin = Origin::RetainedCopy;
+        assert_eq!(
+            install_action(&stable, std::slice::from_ref(&installed)),
+            Some(InstallAction::Alongside)
+        );
+        installed.origin = Origin::AppImage;
+        assert_eq!(
+            install_action(&stable, std::slice::from_ref(&installed)),
+            Some(InstallAction::Alongside)
+        );
+        let preview = releases::chataigne_smoke_release("1.10.5b14", Target::LinuxX64);
+        assert_eq!(
+            install_action(&preview, std::slice::from_ref(&installed)),
+            None
+        );
+        installed.version = stable.version.clone();
+        assert_eq!(
+            install_action(&preview, &[installed]),
+            Some(InstallAction::Update)
+        );
+    }
 }

@@ -14,7 +14,7 @@ use crate::{
     releases::{PackageKind, Release, Target, version},
 };
 
-use super::{InstallResult, Installed, newest, same_version};
+use super::{InstallResult, Installed, Origin, same_version};
 
 fn bundle_id(id: AppId) -> &'static str {
     match id {
@@ -57,21 +57,21 @@ fn bundle(id: AppId, path: PathBuf) -> Option<(Installed, PathBuf)> {
             version: found.into(),
             can_uninstall: true,
             path,
+            origin: Origin::Native,
         },
         binary,
     ))
 }
 
-pub fn detect(id: AppId, _: &Path, _: Target) -> Option<Installed> {
+pub fn versions(id: AppId, _: &Path, _: Target) -> Vec<Installed> {
     let roots = user_applications()
         .into_iter()
         .chain([PathBuf::from("/Applications")]);
-    newest(
-        roots
-            .filter_map(|root| fs::read_dir(root).ok())
-            .flatten()
-            .filter_map(|entry| bundle(id, entry.ok()?.path()).map(|(app, _)| app)),
-    )
+    roots
+        .filter_map(|root| fs::read_dir(root).ok())
+        .flatten()
+        .filter_map(|entry| bundle(id, entry.ok()?.path()).map(|(app, _)| app))
+        .collect()
 }
 
 fn mac_arch(target: Target) -> (&'static str, u32) {
@@ -314,8 +314,12 @@ pub fn install(
 }
 
 pub fn launch(installed: &Installed) -> Result<(), String> {
+    let mut command = Command::new("/usr/bin/open");
+    if installed.origin == Origin::RetainedCopy {
+        command.arg("-n");
+    }
     run(
-        Command::new("/usr/bin/open").arg(&installed.path),
+        command.arg(&installed.path),
         "Could not open the installed app",
     )
 }
@@ -329,6 +333,27 @@ pub fn uninstall(id: AppId, _: &Path, installed: &Installed) -> Result<InstallRe
     Ok(InstallResult::Finished)
 }
 
+pub fn can_retain(installed: &Installed) -> bool {
+    installed
+        .path
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_dir())
+}
+
+pub fn read_copy(id: AppId, directory: &Path) -> Option<Installed> {
+    bundle(id, directory.join(format!("{}.app", id.executable()))).map(|(app, _)| app)
+}
+
+pub fn copy_installed(id: AppId, installed: &Installed, directory: &Path) -> Result<(), String> {
+    let path = directory.join(format!("{}.app", id.executable()));
+    run(
+        Command::new("/usr/bin/ditto")
+            .arg(&installed.path)
+            .arg(path),
+        "Could not copy the installed app",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -337,5 +362,43 @@ mod tests {
     fn mapgyver_versions_use_distinct_bundle_ids_and_destinations() {
         assert_ne!(bundle_id(AppId::MapGyver), bundle_id(AppId::MapGyver2));
         assert_ne!(AppId::MapGyver.executable(), AppId::MapGyver2.executable());
+    }
+
+    #[test]
+    fn macos_bundle_can_be_kept_and_removed_independently() {
+        let work = tempfile::tempdir().unwrap();
+        let id = AppId::Chataigne;
+        let original = work.path().join("Chataigne.app");
+        let binary = original.join("Contents/MacOS/Chataigne");
+        fs::create_dir_all(binary.parent().unwrap()).unwrap();
+        fs::write(binary, b"fixture").unwrap();
+        let fields = plist::Dictionary::from_iter([
+            (
+                "CFBundleIdentifier".into(),
+                plist::Value::String(bundle_id(id).into()),
+            ),
+            (
+                "CFBundleShortVersionString".into(),
+                plist::Value::String("1.10.4".into()),
+            ),
+            (
+                "CFBundleExecutable".into(),
+                plist::Value::String("Chataigne".into()),
+            ),
+        ]);
+        plist::Value::Dictionary(fields)
+            .to_file_xml(original.join("Contents/Info.plist"))
+            .unwrap();
+        let (native, _) = bundle(id, original.clone()).unwrap();
+        super::super::retain(id, work.path(), &native).unwrap();
+        let retained = super::super::copies::versions(id, work.path())
+            .pop()
+            .unwrap();
+        assert_eq!(retained.origin, Origin::RetainedCopy);
+        assert_eq!(retained.version, native.version);
+        assert_ne!(retained.key(), native.key());
+        super::super::uninstall(id, work.path(), &retained).unwrap();
+        assert!(original.is_dir());
+        assert!(!retained.path.exists());
     }
 }

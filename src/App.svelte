@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import AppCard from './AppCard.svelte';
-  import { launcher, type AppId, type CardOutcome, type Channel, type InstallProgress, type LauncherApp } from './api';
+  import { launcher, type AppId, type CardOutcome, type Channel, type InstalledVersion, type InstallProgress, type LauncherApp } from './api';
   import './styles.css';
 
   let apps = $state<LauncherApp[]>([]);
@@ -14,12 +14,12 @@
   let canceling = $state(false);
   let outcomes = $state<Partial<Record<AppId, CardOutcome>>>({});
   let settingsPending = $state<Partial<Record<AppId, boolean>>>({});
-  let opening = $state<Partial<Record<AppId, boolean>>>({});
+  let opening = $state<Partial<Record<AppId, string>>>({});
   let updateNotice = $state('');
   let heading: HTMLHeadingElement;
   let request = 0;
 
-  const updates = $derived(apps.filter((app) => app.updateAvailable));
+  const updates = $derived(apps.filter((app) => app.installAction === 'update'));
   const visible = $derived(view === 'library' ? apps : updates);
   const staleCount = $derived(apps.filter((app) => app.stale).length);
   const failedCount = $derived(apps.filter((app) => app.refreshError).length);
@@ -126,13 +126,14 @@
     }
   }
 
-  async function uninstall(app: LauncherApp) {
-    if (!app.installed || operation) return;
+  async function manage(app: LauncherApp, version: InstalledVersion, action: 'uninstall' | 'keepCopy') {
+    if (operation) return;
     updateNotice = '';
     delete outcomes[app.id];
-    operation = { id: app.id, stage: 'uninstalling', downloaded: 0, total: null };
+    const stage = action === 'uninstall' ? 'uninstalling' : 'retaining';
+    operation = { id: app.id, stage, downloaded: 0, total: null };
     try {
-      const result = await launcher.uninstall(app.id, app.installed.version);
+      const result = await launcher[action](app.id, version.key);
       outcomes[app.id] = result;
       if (view === 'updates' && result.kind === 'uninstalled') updateNotice = `${app.name} was uninstalled.`;
     } catch (reason) {
@@ -143,15 +144,15 @@
     }
   }
 
-  async function open(app: LauncherApp) {
-    opening[app.id] = true;
+  async function open(app: LauncherApp, version: InstalledVersion) {
+    opening[app.id] = version.key;
     try {
-      await launcher.open(app.id);
+      await launcher.open(app.id, version.key);
     } catch (reason) {
       outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false };
       await loadLibrary();
     } finally {
-      opening[app.id] = false;
+      delete opening[app.id];
     }
   }
 </script>
@@ -227,12 +228,13 @@
             outcome={outcomes[app.id]}
             installDisabled={!!operation || !!settingsPending[app.id]}
             settingsDisabled={operation?.id === app.id || !!settingsPending[app.id]}
-            isOpening={!!opening[app.id]}
+            openingVersion={opening[app.id]}
             onChannel={(channel) => chooseChannel(app, channel)}
             onInstall={(graphical) => install(app, graphical)}
             onCancel={() => cancel(app.id)}
-            onOpen={() => open(app)}
-            onUninstall={() => uninstall(app)}
+            onOpen={(version) => open(app, version)}
+            onUninstall={(version) => manage(app, version, 'uninstall')}
+            onKeepCopy={(version) => manage(app, version, 'keepCopy')}
           />
         {/each}
       </div>

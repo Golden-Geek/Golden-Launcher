@@ -16,9 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::{
     catalog::AppId,
-    platform::{self, InstallResult, Installed, same_version},
+    platform::{self, InstallResult, Installed, Origin, same_version},
     releases::{self, PackageKind, Release, Target},
-    state::Library,
+    state::{Library, install_action},
 };
 
 const MAX_PACKAGE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -84,6 +84,7 @@ enum Stage {
     Verifying,
     Installing,
     Uninstalling,
+    Retaining,
 }
 
 #[derive(Clone, Serialize)]
@@ -100,6 +101,7 @@ struct Progress {
 enum ResultKind {
     Installed,
     Uninstalled,
+    Retained,
     Cancelled,
     RestartRequired,
     Failed,
@@ -161,10 +163,8 @@ pub async fn install(
         tauri::async_runtime::spawn_blocking(move || scan.state::<Library>().rescan_app(id))
             .await
             .map_err(|error| error.to_string())?;
-    if let Some(installed) = installed
-        && !releases::newer(&release.version, &installed.version)
-    {
-        return Err("The verified installed version is already current or newer.".into());
+    if install_action(&release, &installed).is_none() {
+        return Err("The selected release is already installed or would replace a newer native installation.".into());
     }
     let temporary = tempfile::Builder::new()
         .prefix("download-")
@@ -215,7 +215,9 @@ pub async fn install(
         let installed = work.state::<Library>().rescan_app(id);
         outcome(
             attempt,
-            installed.as_ref(),
+            installed
+                .iter()
+                .find(|installed| same_version(&installed.version, &release.version)),
             &release.version,
             native_started,
             graphical,
@@ -270,11 +272,13 @@ fn outcome(
 }
 
 #[tauri::command]
-pub async fn launch(app: AppHandle, id: AppId) -> Result<(), String> {
+pub async fn launch(app: AppHandle, id: AppId, key: Option<String>) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Library>();
         let installed = state
             .rescan_app(id)
+            .into_iter()
+            .find(|installed| key.as_deref().is_none_or(|key| installed.key() == key))
             .ok_or("The installation could not be verified. Refresh the library.")?;
         platform::launch(&installed).map(|_| ())
     })
@@ -283,7 +287,7 @@ pub async fn launch(app: AppHandle, id: AppId) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn uninstall(app: AppHandle, id: AppId, version: String) -> Result<Outcome, String> {
+pub async fn uninstall(app: AppHandle, id: AppId, key: String) -> Result<Outcome, String> {
     let state = app.state::<Library>();
     let (_hold, _) = state.operations.begin(id)?;
     let _ = state.operations.finish_download();
@@ -294,13 +298,13 @@ pub async fn uninstall(app: AppHandle, id: AppId, version: String) -> Result<Out
         let library = work.state::<Library>();
         let installed = library
             .rescan_app(id)
-            .filter(|installed| installed.version == version && installed.can_uninstall)
+            .into_iter()
+            .find(|installed| installed.can_uninstall && installed.key() == key)
             .ok_or("The selected installation changed or has no verified uninstaller.")?;
+        let version = &installed.version;
         publish(&work, id, Stage::Uninstalling, 0, None);
         let attempt = platform::uninstall(id, &library.directory, &installed);
-        let remains = library
-            .rescan_app(id)
-            .is_some_and(|app| app.path == installed.path);
+        let remains = library.rescan_app(id).iter().any(|app| app.key() == key);
         let (kind, message) = match attempt {
             Ok(InstallResult::Finished) if !remains => (
                 ResultKind::Uninstalled,
@@ -320,6 +324,44 @@ pub async fn uninstall(app: AppHandle, id: AppId, version: String) -> Result<Out
         Ok(Outcome {
             kind,
             message,
+            retry_graphically: false,
+        })
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+pub async fn retain_installation(
+    app: AppHandle,
+    id: AppId,
+    key: String,
+) -> Result<Outcome, String> {
+    let state = app.state::<Library>();
+    let (_hold, _) = state.operations.begin(id)?;
+    let _ = state.operations.finish_download();
+    let lock = lock_directory(&state.directory)?;
+    let work = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lock = lock;
+        let library = work.state::<Library>();
+        let installed = library
+            .rescan_app(id)
+            .into_iter()
+            .find(|installed| installed.key() == key)
+            .ok_or("The selected installation changed. Refresh the library.")?;
+        publish(&work, id, Stage::Retaining, 0, None);
+        let attempt = platform::retain(id, &library.directory, &installed);
+        let verified = library.rescan_app(id).iter().any(|entry| {
+            entry.origin == Origin::RetainedCopy && same_version(&entry.version, &installed.version)
+        });
+        attempt?;
+        if !verified {
+            return Err("The saved copy could not be verified.".into());
+        }
+        Ok(Outcome {
+            kind: ResultKind::Retained,
+            message: format!("Kept a copy of version {}.", installed.version),
             retry_graphically: false,
         })
     })
@@ -514,6 +556,7 @@ mod tests {
             version: "1.0.0".into(),
             can_uninstall: true,
             path: "old-app".into(),
+            origin: Origin::Native,
         };
         let verified = Some(&installed);
         let failed = outcome(
@@ -618,21 +661,45 @@ mod tests {
                     found.version,
                     found.path.display()
                 );
+                #[cfg(windows)]
+                if version == "1.10.4" {
+                    platform::retain(id, work.path(), &found).unwrap();
+                }
             }
         }
         #[cfg(not(target_os = "macos"))]
         {
-            let installed = platform::detect(id, work.path(), target).expect("updated Chataigne");
-            let pid = platform::launch(&installed).unwrap();
-            let found = (0..20).any(|_| {
-                std::thread::sleep(Duration::from_millis(500));
-                chataigne_running(pid)
-            });
-            assert!(found, "Chataigne process did not start");
-            std::thread::sleep(Duration::from_secs(2));
-            assert!(chataigne_running(pid), "Chataigne quit during launch");
-            println!("Launched Chataigne {} (PID {pid}).", installed.version);
-            stop_smoke_app(pid);
+            let versions = platform::installed_versions(id, work.path(), target);
+            assert_eq!(versions.len(), 2, "both versions should remain installed");
+            assert!(same_version(&versions[0].version, "1.10.5b14"));
+            assert!(same_version(&versions[1].version, "1.10.4"));
+            for installed in &versions {
+                let pid = platform::launch(installed).unwrap();
+                let found = (0..20).any(|_| {
+                    std::thread::sleep(Duration::from_millis(500));
+                    chataigne_running(pid)
+                });
+                assert!(found, "Chataigne process did not start");
+                std::thread::sleep(Duration::from_secs(2));
+                assert!(chataigne_running(pid), "Chataigne quit during launch");
+                println!("Launched Chataigne {} (PID {pid}).", installed.version);
+                stop_smoke_app(pid);
+                assert!(
+                    (0..20).any(|_| {
+                        std::thread::sleep(Duration::from_millis(250));
+                        !chataigne_running(pid)
+                    }),
+                    "Chataigne did not exit after the test"
+                );
+            }
+            assert!(matches!(
+                platform::uninstall(id, work.path(), &versions[1]),
+                Ok(InstallResult::Finished)
+            ));
+            let remaining = platform::installed_versions(id, work.path(), target);
+            assert_eq!(remaining.len(), 1);
+            assert_eq!(remaining[0].key(), versions[0].key());
+            println!("Removed Chataigne 1.10.4 and verified 1.10.5b14 is still installed.");
         }
     }
 
@@ -661,7 +728,7 @@ mod tests {
     #[cfg(windows)]
     fn stop_smoke_app(pid: u32) {
         let _ = std::process::Command::new("taskkill.exe")
-            .args(["/PID", &pid.to_string()])
+            .args(["/F", "/PID", &pid.to_string()])
             .status();
     }
 }

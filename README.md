@@ -4,6 +4,8 @@ Install, update, and open Chataigne, Chataigne 2, MapGyver, MapGyver 2, Blux, Bl
 
 The library defaults to Stable. Enable Preview in an app’s release settings to include prereleases. Updates appear when the selected channel has a package for your device with a version newer than the verified installation. Installed apps can open offline, and cached release data is labeled.
 
+Use **Manage versions** on an app card to open or uninstall a specific installation. On Linux and Raspberry Pi, AppImage updates keep earlier versions. Switch channels and choose **Install alongside** to add a different eligible version. On Windows and macOS, choose **Keep a copy** before updating to preserve the installed version in the launcher. Copies can share the publisher’s app settings and may need the other version closed before launch.
+
 ## Development
 
 Install Node.js 24, Rust 1.95 or later, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.

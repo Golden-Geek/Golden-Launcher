@@ -15,7 +15,7 @@ use crate::{
     state::write_json,
 };
 
-use super::{InstallResult, Installed, working_directory};
+use super::{InstallResult, Installed, Origin, working_directory};
 
 #[derive(Deserialize, Serialize)]
 struct Receipt {
@@ -29,9 +29,8 @@ fn app_dir(directory: &Path, id: AppId) -> PathBuf {
     directory.join("apps").join(id.slug())
 }
 
-fn active_receipt(root: &Path, id: AppId) -> Option<Receipt> {
-    let receipt: Receipt =
-        serde_json::from_slice(&fs::read(root.join("current.json")).ok()?).ok()?;
+fn read_receipt(path: &Path, id: AppId) -> Option<Receipt> {
+    let receipt: Receipt = serde_json::from_slice(&fs::read(path).ok()?).ok()?;
     let valid_generation = receipt.generation.starts_with("image-")
         && receipt
             .generation
@@ -46,10 +45,14 @@ fn image_path(root: &Path, id: AppId, receipt: &Receipt) -> PathBuf {
         .join(format!("{}.AppImage", id.slug()))
 }
 
-pub fn detect(id: AppId, directory: &Path, target: Target) -> Option<Installed> {
-    let root = app_dir(directory, id);
-    let receipt = active_receipt(&root, id)?;
-    let path = image_path(&root, id, &receipt);
+fn verify_image(id: AppId, root: &Path, receipt: Receipt, target: Target) -> Option<Installed> {
+    let path = image_path(root, id, &receipt);
+    if !working_directory(&path)
+        .symlink_metadata()
+        .is_ok_and(|metadata| metadata.is_dir())
+    {
+        return None;
+    }
     let metadata = path.symlink_metadata().ok()?;
     if !metadata.is_file() || metadata.permissions().mode() & 0o100 == 0 {
         return None;
@@ -74,7 +77,39 @@ pub fn detect(id: AppId, directory: &Path, target: Target) -> Option<Installed> 
         version: receipt.version,
         can_uninstall: true,
         path,
+        origin: Origin::AppImage,
     })
+}
+
+pub fn versions(id: AppId, directory: &Path, target: Target) -> Vec<Installed> {
+    let root = app_dir(directory, id);
+    let mut receipts = Vec::new();
+    // Preserve installations created with the original launcher receipt format.
+    receipts.extend(read_receipt(&root.join("current.json"), id));
+    receipts.extend(
+        fs::read_dir(&root)
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
+            .filter_map(|entry| {
+                let receipt = read_receipt(&entry.path().join("receipt.json"), id)?;
+                (entry.file_name() == std::ffi::OsStr::new(&receipt.generation)).then_some(receipt)
+            }),
+    );
+    receipts.sort_by(|left, right| left.generation.cmp(&right.generation));
+    receipts.dedup_by(|left, right| left.generation == right.generation);
+    receipts
+        .into_iter()
+        .filter_map(|receipt| verify_image(id, &root, receipt, target))
+        .collect()
+}
+
+#[cfg(test)]
+pub fn detect(id: AppId, directory: &Path, target: Target) -> Option<Installed> {
+    super::installed_versions(id, directory, target)
+        .into_iter()
+        .next()
 }
 
 pub fn uninstall(
@@ -83,15 +118,26 @@ pub fn uninstall(
     installed: &Installed,
 ) -> Result<InstallResult, String> {
     let root = app_dir(directory, id);
-    let receipt =
-        active_receipt(&root, id).ok_or("The managed installation could not be verified.")?;
-    if image_path(&root, id, &receipt) != installed.path {
+    let folder = working_directory(&installed.path);
+    let receipt_path = folder.join("receipt.json");
+    let legacy_path = root.join("current.json");
+    let is_selected = |receipt: Receipt| {
+        image_path(&root, id, &receipt) == installed.path && receipt.version == installed.version
+    };
+    let confirmed = read_receipt(&receipt_path, id).is_some_and(is_selected);
+    let legacy = read_receipt(&legacy_path, id).is_some_and(is_selected);
+    if folder.parent() != Some(root.as_path()) || (!confirmed && !legacy) {
         return Err("The managed installation changed. Refresh the library and try again.".into());
     }
     fs::remove_file(&installed.path)
         .map_err(|error| format!("Could not remove the AppImage ({error})."))?;
-    let _ = fs::remove_file(root.join("current.json"));
-    let _ = fs::remove_dir(working_directory(&installed.path));
+    if confirmed {
+        let _ = fs::remove_file(receipt_path);
+    }
+    if legacy {
+        let _ = fs::remove_file(legacy_path);
+    }
+    let _ = fs::remove_dir(folder);
     Ok(InstallResult::Finished)
 }
 
@@ -109,7 +155,6 @@ pub fn install(
     }
     let root = app_dir(directory, id);
     fs::create_dir_all(&root).map_err(file_error)?;
-    let previous = active_receipt(&root, id);
     let generation = tempfile::Builder::new()
         .prefix("image-")
         .tempdir_in(&root)
@@ -131,15 +176,12 @@ pub fn install(
     File::open(generation.path())
         .and_then(|file| file.sync_all())
         .map_err(file_error)?;
-    // The receipt is the activation point. Until its atomic rename the old image remains active.
-    write_json(&root.join("current.json"), &receipt).map_err(file_error)?;
+    // Publish only after the new image is durable. Other verified versions stay available.
+    write_json(&generation.path().join("receipt.json"), &receipt).map_err(file_error)?;
     let _ = generation.keep();
-    if File::open(&root).and_then(|file| file.sync_all()).is_ok()
-        && let Some(previous) = previous
-    {
-        let _ = fs::remove_file(image_path(&root, id, &previous));
-        let _ = fs::remove_dir(root.join(previous.generation));
-    }
+    File::open(&root)
+        .and_then(|file| file.sync_all())
+        .map_err(file_error)?;
     Ok(InstallResult::Finished)
 }
 
@@ -228,6 +270,13 @@ mod tests {
         let digest = hex::encode(Sha256::digest(header));
         install(id, dir.path(), &original, &release, &digest, false, target).unwrap();
         let before = detect(id, dir.path(), target).unwrap();
+        // A library first installed by the earlier launcher has the receipt at the app root.
+        fs::rename(
+            working_directory(&before.path).join("receipt.json"),
+            app_dir(dir.path(), id).join("current.json"),
+        )
+        .unwrap();
+        assert_eq!(detect(id, dir.path(), target).unwrap().key(), before.key());
         let update = Release {
             version: "1.1.0".into(),
             ..release
@@ -236,13 +285,19 @@ mod tests {
         let after = detect(id, dir.path(), target).unwrap();
         assert_eq!(before.path, after.path);
         assert_eq!(after.version, "1.0.0");
+        fs::write(&after.path, [0; 64]).unwrap();
+        assert!(detect(id, dir.path(), target).is_none());
+        fs::write(&after.path, header).unwrap();
+        fs::write(&original, header).unwrap();
+        install(id, dir.path(), &original, &update, &digest, false, target).unwrap();
+        assert_eq!(versions(id, dir.path(), target).len(), 2);
         let unrelated = dir.path().join("user-project");
         fs::write(&unrelated, b"project data").unwrap();
         assert!(uninstall(AppId::BenTo, dir.path(), &after).is_err());
         assert!(detect(id, dir.path(), target).is_some());
         uninstall(id, dir.path(), &after).unwrap();
         assert!(!after.path.exists());
-        assert!(detect(id, dir.path(), target).is_none());
+        assert_eq!(detect(id, dir.path(), target).unwrap().version, "1.1.0");
         assert!(unrelated.exists());
     }
 }

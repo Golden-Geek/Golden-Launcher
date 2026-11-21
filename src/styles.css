@@ -220,6 +220,7 @@ h1:focus { outline: none; }
   line-height: 1.5;
 }
 .app-card summary { cursor: pointer; }
+.app-card details + details { margin-top: 9px; }
 .app-card summary:hover { color: #f5ebda; }
 .app-card details h3 { margin: 13px 0 5px; color: #efe7d9; font-size: .83rem; }
 .app-card details p { margin: 0 0 3px; }
@@ -228,7 +229,12 @@ h1:focus { outline: none; }
 .notes li + li { margin-top: 4px; }
 .channel { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-top: 10px; }
 .channel select { max-width: 100%; border: 1px solid #51483a; border-radius: 6px; padding: 4px 5px; background: #2b2721; color: #f1e6d5; }
-.manage-version { margin-top: 12px; }
+.manage-version { margin-top: 10px; }
+.manage-version + .manage-version { border-top: 1px solid var(--line); padding-top: 9px; }
+.installed-version-label { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+.installed-version-label strong { color: #efe7d9; font-variant-numeric: tabular-nums; }
+.version-controls { display: flex; flex-wrap: wrap; gap: 5px; }
+.version-controls .button { min-height: 29px; padding-inline: 8px; font-size: .73rem; }
 .manage-version p { padding-bottom: 5px; }
 
 .operation { margin: 0 0 12px; }

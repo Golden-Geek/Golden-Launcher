@@ -1,5 +1,5 @@
 <script lang="ts">
-  import type { CardOutcome, Channel, InstallProgress, LauncherApp } from './api';
+  import type { CardOutcome, Channel, InstalledVersion, InstallProgress, LauncherApp } from './api';
 
   interface Props {
     app: LauncherApp;
@@ -8,17 +8,18 @@
     outcome?: CardOutcome;
     installDisabled: boolean;
     settingsDisabled: boolean;
-    isOpening: boolean;
+    openingVersion?: string;
     onChannel: (channel: Channel) => void;
     onInstall: (graphical?: boolean) => void;
     onCancel: () => void;
-    onOpen: () => void;
-    onUninstall: () => void;
+    onOpen: (version: InstalledVersion) => void;
+    onUninstall: (version: InstalledVersion) => void;
+    onKeepCopy: (version: InstalledVersion) => void;
   }
 
   let {
-    app, progress, canceling, outcome, installDisabled, settingsDisabled, isOpening,
-    onChannel, onInstall, onCancel, onOpen, onUninstall,
+    app, progress, canceling, outcome, installDisabled, settingsDisabled, openingVersion,
+    onChannel, onInstall, onCancel, onOpen, onUninstall, onKeepCopy,
   }: Props = $props();
 
   const availabilityText = {
@@ -33,12 +34,15 @@
     verifying: 'Verifying package',
     installing: 'Installing',
     uninstalling: 'Uninstalling',
+    retaining: 'Saving a copy',
   };
+  const origins = { native: 'Installed app', appImage: 'AppImage', retainedCopy: 'Kept copy' };
+  const actions = { install: 'Install', update: 'Update', alongside: 'Install alongside' };
 
   const percent = $derived(progress?.total ? Math.min(100, Math.floor(100 * progress.downloaded / progress.total)) : undefined);
-  const canInstall = $derived(app.available && (!app.installed || app.updateAvailable) && outcome?.kind !== 'restartRequired');
+  const installLabel = $derived(app.installAction && outcome?.kind !== 'restartRequired' ? actions[app.installAction] : undefined);
   const retry = $derived(outcome?.retryInstall);
-  let confirmUninstall = $state(false);
+  let confirmUninstall = $state<string>();
 
   function changeChannel(event: Event & { currentTarget: HTMLSelectElement }) {
     const selection = event.currentTarget;
@@ -62,7 +66,7 @@
     {#if app.installed}
       <span class="version installed" title="Verified installed version"><i></i> {app.installed.version} installed</span>
     {/if}
-    {#if app.available && (!app.installed || app.updateAvailable || app.available.version !== app.installed.version)}
+    {#if app.available && (!app.installed || app.available.version !== app.installed.version)}
       <span class:preview={app.available.preview} class="version">
         {app.available.version} {app.available.preview ? 'preview' : 'available'}
       </span>
@@ -89,13 +93,14 @@
       <button class="button" disabled={canceling} onclick={onCancel}>Cancel</button>
     {:else if !progress}
       {#if app.installed && outcome?.kind !== 'restartRequired'}
-        <button class:primary={!canInstall} class="button" disabled={isOpening} onclick={onOpen}>
-          {isOpening ? 'Opening…' : 'Open'}<span aria-hidden="true">↗</span>
+        {@const installed = app.installed}
+        <button class:primary={!installLabel} class="button" disabled={!!openingVersion} onclick={() => onOpen(installed)}>
+          {openingVersion === installed.key ? 'Opening…' : 'Open'}<span aria-hidden="true">↗</span>
         </button>
       {/if}
-      {#if canInstall}
+      {#if installLabel}
         <button class="button primary" disabled={installDisabled} onclick={() => onInstall()}>
-          {retry ? 'Retry' : app.updateAvailable ? 'Update' : 'Install'}
+          {retry ? 'Retry' : installLabel}
         </button>
         {#if outcome?.retryGraphically}
           <button class="button" disabled={installDisabled} onclick={() => onInstall(true)}>Retry with installer</button>
@@ -105,6 +110,42 @@
       {/if}
     {/if}
   </div>
+
+  {#if app.installedVersions.length}
+    <details>
+      <summary>Manage versions{app.installedVersions.length > 1 ? ` (${app.installedVersions.length})` : ''}</summary>
+      {#each app.installedVersions as version (version.key)}
+        <div class="manage-version">
+          <div class="installed-version-label">
+            <strong>{version.version}</strong>
+            <span>{origins[version.origin]}</span>
+          </div>
+          {#if confirmUninstall === version.key}
+            <p>Uninstall {app.name} {version.version}?</p>
+            <div class="version-controls">
+              <button class="button danger" disabled={installDisabled} onclick={() => {
+                confirmUninstall = undefined;
+                onUninstall(version);
+              }}>Uninstall version</button>
+              <button class="button" onclick={() => { confirmUninstall = undefined; }}>Keep installed</button>
+            </div>
+          {:else}
+            <div class="version-controls">
+              <button class="button" disabled={!!progress || !!openingVersion} onclick={() => onOpen(version)}>
+                {openingVersion === version.key ? 'Opening…' : 'Open'}
+              </button>
+              {#if version.canRetain}
+                <button class="button" disabled={installDisabled} onclick={() => onKeepCopy(version)}>Keep a copy</button>
+              {/if}
+              {#if version.canUninstall}
+                <button class="button" disabled={installDisabled} onclick={() => { confirmUninstall = version.key; }}>Uninstall…</button>
+              {/if}
+            </div>
+          {/if}
+        </div>
+      {/each}
+    </details>
+  {/if}
 
   <details>
     <summary>{app.available ? 'Release notes & settings' : 'Release settings'}</summary>
@@ -127,20 +168,6 @@
     {/if}
     {#if app.refreshError}
       <p class="refresh-error">{app.refreshError}</p>
-    {/if}
-    {#if app.installed?.canUninstall}
-      <div class="manage-version">
-        {#if confirmUninstall}
-          <p>Uninstall {app.name} {app.installed.version}?</p>
-          <button class="button danger" disabled={installDisabled} onclick={() => {
-            confirmUninstall = false;
-            onUninstall();
-          }}>Uninstall version</button>
-          <button class="button" onclick={() => { confirmUninstall = false; }}>Keep installed</button>
-        {:else}
-          <button class="button" disabled={installDisabled} onclick={() => { confirmUninstall = true; }}>Uninstall…</button>
-        {/if}
-      </div>
     {/if}
   </details>
 </article>
