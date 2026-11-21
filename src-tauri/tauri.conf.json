@@ -12,7 +12,16 @@
   "app": {
     "withGlobalTauri": false,
     "windows": [
-      { "label": "main", "title": "Golden Launcher", "width": 1120, "height": 760, "minWidth": 580, "minHeight": 520 }
+      {
+        "label": "main",
+        "title": "Golden Launcher",
+        "width": 1180,
+        "height": 780,
+        "minWidth": 580,
+        "minHeight": 520,
+        "theme": "Dark",
+        "backgroundColor": "#161615"
+      }
     ],
     "security": {
       "csp": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",

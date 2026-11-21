@@ -114,7 +114,7 @@ pub fn install(
         .map_err(file_error)?;
     // The receipt is the activation point. Until its atomic rename the old image remains active.
     write_json(&root.join("current.json"), &receipt).map_err(file_error)?;
-    generation.keep();
+    let _ = generation.keep();
     if File::open(&root).and_then(|file| file.sync_all()).is_ok()
         && let Some(previous) = previous
     {
