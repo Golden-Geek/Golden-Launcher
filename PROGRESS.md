@@ -1,6 +1,6 @@
 # Golden Launcher progress
 
-**67%** `███████░░░` · 4 of 6 milestones complete
+**83%** `████████░░` · 5 of 6 milestones complete
 
 | # | Milestone | Status |
 |---|---|---|
@@ -8,12 +8,12 @@
 | 2 | Publisher feeds, target resolution, versions, and offline cache | Done |
 | 3 | Download verification, installation, detection, and launch | Done |
 | 4 | Library, Updates, and inline operation controls | Done |
-| 5 | Automated checks and six-target CI packaging | In progress · packages uploaded for 5 of 6 targets |
+| 5 | Automated checks and six-target CI packaging | Done · packages verified for all six targets |
 | 6 | Official install, update, and launch smoke tests on all six targets | Waiting on test devices · 2 of 6 targets passed |
 
 Each milestone counts equally. The smoke-test milestone includes Raspberry Pi OS hardware for both architectures and a coexistence check once a qualifying MapGyver 2 package is available.
 
-**CI packages** 83% `████████░░` · 5 of 6 targets. Raspberry Pi armhf packaging is running. [Desktop packaging run](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44913372437)
+**CI packages** 100% `██████████` · 6 of 6 targets. The armhf Debian package was checked with `dpkg-deb`. [Desktop artifacts](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44913372437) · [armhf artifact](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44917066709)
 
 ## Publisher smoke tests
 

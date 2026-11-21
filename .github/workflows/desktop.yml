@@ -96,7 +96,7 @@ jobs:
   raspberry-pi:
     name: Raspberry Pi OS ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 60
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
@@ -104,12 +104,10 @@ jobs:
           - arch: aarch64
             deb_arch: arm64
             runner: ubuntu-24.04-arm
-            platform: linux/arm64
             target: aarch64-unknown-linux-gnu
           - arch: armhf
             deb_arch: armhf
             runner: ubuntu-24.04
-            platform: linux/arm/v7
             target: armv7-unknown-linux-gnueabihf
     steps:
       - uses: actions/checkout@v7
@@ -122,19 +120,58 @@ jobs:
           path: |
             ${{ runner.temp }}/golden-arm/cargo
             src-tauri/target
-          key: golden-bookworm-${{ matrix.target }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
-      - name: Build and inspect the Debian package on Bookworm
+          key: golden-bookworm-${{ matrix.arch == 'armhf' && 'cross-' || '' }}${{ matrix.target }}-${{ env.RUST_VERSION }}-${{ hashFiles('src-tauri/Cargo.lock') }}
+      - name: Prepare the ARMv7 Bookworm sysroot
+        if: matrix.arch == 'armhf'
+        run: |
+          sysroot="$RUNNER_TEMP/armhf-sysroot"
+          mkdir -p "$sysroot"
+          docker run --name golden-armhf-sysroot --platform linux/arm/v7 -e DEBIAN_FRONTEND=noninteractive debian:bookworm bash -euc '
+            apt-get -o Acquire::Retries=3 update
+            apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev
+          '
+          docker export golden-armhf-sysroot | tar --no-same-owner -x -C "$sysroot"
+          # Keep absolute library links inside the exported root.
+          find "$sysroot/usr/lib/arm-linux-gnueabihf" -type l -lname '/*' -print0 |
+            while IFS= read -r -d '' link; do
+              target="$(readlink "$link")"
+              ln -sfn "$(realpath -sm --relative-to="$(dirname "$link")" "$sysroot$target")" "$link"
+            done
+          test -f "$sysroot/usr/lib/arm-linux-gnueabihf/libdbus-1.so"
+      - name: Cross-compile the armhf Debian package
+        if: matrix.arch == 'armhf'
+        run: |
+          mkdir -p "$RUNNER_TEMP/golden-arm/cargo"
+          docker run --rm --platform linux/amd64 -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
+            -v "$RUNNER_TEMP/armhf-sysroot:/opt/armhf-sysroot:ro" \
+            -v "$RUNNER_TEMP/golden-arm/cargo:/opt/golden-cargo" \
+            -e CARGO_HOME=/opt/golden-cargo -e RUST_VERSION -e CI \
+            -e DEBIAN_FRONTEND=noninteractive node:22-bookworm bash -euo pipefail -c '
+              apt-get -o Acquire::Retries=3 update
+              apt-get install -y --no-install-recommends crossbuild-essential-armhf pkg-config
+              curl --proto "=https" --tlsv1.2 -fsSL https://sh.rustup.rs |
+                sh -s -- -y --profile minimal --default-toolchain "$RUST_VERSION" --target armv7-unknown-linux-gnueabihf --no-modify-path
+              export PATH="$CARGO_HOME/bin:$PATH"
+              export PKG_CONFIG_ALLOW_CROSS=1
+              export PKG_CONFIG_SYSROOT_DIR=/opt/armhf-sysroot
+              export PKG_CONFIG_LIBDIR="$PKG_CONFIG_SYSROOT_DIR/usr/lib/arm-linux-gnueabihf/pkgconfig:$PKG_CONFIG_SYSROOT_DIR/usr/share/pkgconfig"
+              printf "%s\n" "#!/bin/sh" "exec arm-linux-gnueabihf-gcc --sysroot=/opt/armhf-sysroot -Wl,-rpath-link,/opt/armhf-sysroot/usr/lib/arm-linux-gnueabihf \"\$@\"" > /tmp/link-armhf
+              chmod +x /tmp/link-armhf
+              export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=/tmp/link-armhf
+              npm ci
+              npm run tauri -- build --ci --target armv7-unknown-linux-gnueabihf --bundles deb -- --locked
+            '
+      - name: Build the aarch64 Debian package on Bookworm
+        if: matrix.arch == 'aarch64'
         env:
-          PLATFORM: ${{ matrix.platform }}
-          DEB_ARCH: ${{ matrix.deb_arch }}
           TARGET: ${{ matrix.target }}
         run: |
           mkdir -p "$RUNNER_TEMP/golden-arm/cargo"
-          docker run --rm --platform "$PLATFORM" \
+          docker run --rm --platform linux/arm64 \
             -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             -v "$RUNNER_TEMP/golden-arm/cargo:/opt/golden-cargo" \
             -e CARGO_HOME=/opt/golden-cargo -e CARGO_BUILD_JOBS=2 \
-            -e TARGET -e DEB_ARCH -e RUST_VERSION -e CI \
+            -e TARGET -e RUST_VERSION -e CI \
             -e DEBIAN_FRONTEND=noninteractive node:22-bookworm bash -euo pipefail -c '
               apt-get -o Acquire::Retries=3 update
               apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev
@@ -143,10 +180,15 @@ jobs:
               export PATH="$CARGO_HOME/bin:$PATH"
               npm ci
               npm run tauri -- build --ci --target "$TARGET" --bundles deb -- --locked
-              for package in src-tauri/target/"$TARGET"/release/bundle/deb/*.deb; do
-                test "$(dpkg-deb -f "$package" Architecture)" = "$DEB_ARCH"
-              done
             '
+      - name: Check the Debian package architecture
+        env:
+          TARGET: ${{ matrix.target }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          for package in src-tauri/target/"$TARGET"/release/bundle/deb/*.deb; do
+            test "$(dpkg-deb -f "$package" Architecture)" = "$DEB_ARCH"
+          done
       - uses: actions/upload-artifact@v7
         with:
           name: golden-launcher-${{ matrix.target }}
