@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import AppCard from './AppCard.svelte';
-  import { launcher, type AppId, type CardOutcome, type Channel, type InstalledVersion, type InstallProgress, type LauncherApp } from './api';
+  import { launcher, selfUpdater, type AppId, type CardOutcome, type Channel, type InstalledVersion, type InstallProgress, type LauncherApp } from './api';
   import './styles.css';
 
   let apps = $state<LauncherApp[]>([]);
@@ -16,6 +16,10 @@
   let settingsPending = $state<Partial<Record<AppId, boolean>>>({});
   let opening = $state<Partial<Record<AppId, string>>>({});
   let updateNotice = $state('');
+  let launcherVersion = $state<string | null>(null);
+  let launcherUpdateError = $state('');
+  let launcherChecking = $state(false);
+  let launcherInstalling = $state(false);
   let heading: HTMLHeadingElement;
   let request = 0;
 
@@ -54,6 +58,36 @@
     }
   }
 
+  async function checkLauncherUpdate() {
+    if (launcherChecking || launcherVersion || launcherInstalling) return;
+    launcherChecking = true;
+    launcherUpdateError = '';
+    try {
+      launcherVersion = await selfUpdater.prepare();
+    } catch (reason) {
+      launcherUpdateError = message(reason);
+    } finally {
+      launcherChecking = false;
+    }
+  }
+
+  async function installLauncherUpdate() {
+    if (!launcherVersion || launcherInstalling || operation) return;
+    launcherInstalling = true;
+    launcherUpdateError = '';
+    try {
+      await selfUpdater.install();
+    } catch (reason) {
+      launcherUpdateError = message(reason);
+      launcherInstalling = false;
+    }
+  }
+
+  function refreshAll() {
+    void refresh();
+    void checkLauncherUpdate();
+  }
+
   onMount(() => {
     let disposed = false;
     let unsubscribe: (() => void) | undefined;
@@ -69,9 +103,12 @@
       isLoading = false;
       if (!disposed && apps.length) void refresh();
     });
+    void checkLauncherUpdate();
+    const updateTimer = window.setInterval(checkLauncherUpdate, 4 * 60 * 60 * 1000);
     return () => {
       disposed = true;
       unsubscribe?.();
+      window.clearInterval(updateTimer);
     };
   });
 
@@ -97,7 +134,7 @@
   }
 
   async function install(app: LauncherApp, graphical = false) {
-    if (!app.available || operation) return;
+    if (!app.available || operation || launcherInstalling) return;
     updateNotice = '';
     delete outcomes[app.id];
     operation = { id: app.id, stage: 'downloading', downloaded: 0, total: null };
@@ -127,7 +164,7 @@
   }
 
   async function manage(app: LauncherApp, version: InstalledVersion, action: 'uninstall' | 'keepCopy') {
-    if (operation) return;
+    if (operation || launcherInstalling) return;
     updateNotice = '';
     delete outcomes[app.id];
     const stage = action === 'uninstall' ? 'uninstalling' : 'retaining';
@@ -170,7 +207,7 @@
       </button>
       <button class:active={view === 'updates'} aria-current={view === 'updates' ? 'page' : undefined} onclick={() => setView('updates')}>
         <span class="nav-icon updates-icon" aria-hidden="true">↓</span> Updates
-        {#if updates.length}<span class="nav-count">{updates.length}</span>{/if}
+        {#if updates.length || launcherVersion}<span class="nav-count">{updates.length + Number(!!launcherVersion)}</span>{/if}
       </button>
     </nav>
 
@@ -197,10 +234,10 @@
         {#if view === 'library'}
           <p>{apps.length} apps <span aria-hidden="true">·</span> {installedCount} installed</p>
         {:else}
-          <p>{updates.length} {updates.length === 1 ? 'update' : 'updates'} available</p>
+          <p>{updates.length} {updates.length === 1 ? 'library update' : 'library updates'} available</p>
         {/if}
       </div>
-      <button class="button refresh" disabled={isRefreshing || isLoading} onclick={refresh}>
+      <button class="button refresh" disabled={isRefreshing || isLoading} onclick={refreshAll}>
         <span class:spinning={isRefreshing} aria-hidden="true">↻</span>
         {isRefreshing ? 'Checking…' : 'Refresh'}
       </button>
@@ -216,6 +253,25 @@
     {/if}
     {#if updateNotice}<p class="banner banner-success" role="status">{updateNotice}</p>{/if}
 
+    {#if launcherVersion}
+      <div class="banner launcher-update">
+        <div>
+          <p role="status">Golden Launcher {launcherVersion} is ready to install.</p>
+          {#if launcherUpdateError}<p role="alert">Launcher update failed. {launcherUpdateError}</p>{/if}
+        </div>
+        <button class="button primary" disabled={launcherInstalling || !!operation} onclick={installLauncherUpdate}>
+          {launcherInstalling ? 'Installing…' : 'Install and restart'}
+        </button>
+      </div>
+    {:else if view === 'updates' && launcherChecking}
+      <p class="banner" role="status">Checking for a Golden Launcher update…</p>
+    {:else if view === 'updates' && launcherUpdateError}
+      <div class="banner banner-error launcher-update">
+        <span role="alert">Could not check for a Golden Launcher update. {launcherUpdateError}</span>
+        <button class="button" onclick={checkLauncherUpdate}>Retry</button>
+      </div>
+    {/if}
+
     {#if isLoading}
       <div class="empty" role="status"><p>Loading your library…</p></div>
     {:else if visible.length}
@@ -226,7 +282,7 @@
             progress={operation?.id === app.id ? operation : undefined}
             {canceling}
             outcome={outcomes[app.id]}
-            installDisabled={!!operation || !!settingsPending[app.id]}
+            installDisabled={!!operation || launcherInstalling || !!settingsPending[app.id]}
             settingsDisabled={operation?.id === app.id || !!settingsPending[app.id]}
             openingVersion={opening[app.id]}
             onChannel={(channel) => chooseChannel(app, channel)}
@@ -241,7 +297,7 @@
     {:else if view === 'updates'}
       <div class="empty">
         <span class="empty-mark" aria-hidden="true">✓</span>
-        <h2>{isRefreshing ? 'Checking for updates' : 'No updates available'}</h2>
+        <h2>{isRefreshing ? 'Checking the library' : 'No library updates available'}</h2>
         <p>Available updates for installed apps appear here.</p>
         <button class="button" onclick={() => setView('library')}>View library</button>
       </div>

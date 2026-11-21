@@ -5,11 +5,14 @@ mod operations;
 mod platform;
 mod releases;
 mod state;
+mod updater;
 
 use tauri::Manager;
 
 fn main() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .manage(updater::StagedUpdate::default())
         .setup(|app| {
             let path = app.path().app_local_data_dir()?;
             app.manage(state::Library::new(path)?);
@@ -23,7 +26,9 @@ fn main() {
             operations::cancel_download,
             operations::launch,
             operations::uninstall,
-            operations::retain_installation
+            operations::retain_installation,
+            updater::prepare_launcher_update,
+            updater::install_launcher_update
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Golden Launcher");

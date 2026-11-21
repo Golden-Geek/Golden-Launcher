@@ -133,7 +133,7 @@ pub fn cancel_download(state: State<'_, Library>, id: AppId) -> bool {
     state.operations.cancel(id)
 }
 
-fn lock_directory(directory: &Path) -> Result<File, String> {
+pub(crate) fn lock_directory(directory: &Path) -> Result<File, String> {
     fs::create_dir_all(directory).map_err(file_error)?;
     let lock = OpenOptions::new()
         .read(true)

@@ -3,6 +3,7 @@ name: Desktop packages
 on:
   push:
     branches: [main]
+    tags: ['v*']
     paths-ignore: ["**/*.md"]
   pull_request:
     paths-ignore: ["**/*.md"]
@@ -26,6 +27,7 @@ env:
   CARGO_PROFILE_TEST_DEBUG: "0"
   RUST_VERSION: "1.95.0"
   NODE_VERSION: "24"
+  GOLDEN_RELEASE: "${{ github.ref_type == 'tag' && 'true' || 'false' }}"
 
 jobs:
   desktop:
@@ -83,10 +85,18 @@ jobs:
           cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
           cargo test --locked --manifest-path src-tauri/Cargo.toml
       - name: Bundle Golden Launcher
+        shell: bash
         env:
           APPLE_SIGNING_IDENTITY: "-"
           APPIMAGE_EXTRACT_AND_RUN: "1"
-        run: npm run tauri -- build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" -- --locked
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
+        run: |
+          release_config=()
+          if [ "$GOLDEN_RELEASE" = true ]; then
+            release_config=(--config src-tauri/tauri.release.conf.json)
+          fi
+          npm run tauri -- build --ci --target "${{ matrix.target }}" --bundles "${{ matrix.bundles }}" "${release_config[@]}" -- --locked
       - uses: actions/upload-artifact@v7
         with:
           name: golden-launcher-${{ matrix.target }}
@@ -95,6 +105,8 @@ jobs:
             src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg
             src-tauri/target/${{ matrix.target }}/release/bundle/appimage/*.AppImage
             src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/macos/*.app.tar.gz
+            src-tauri/target/${{ matrix.target }}/release/bundle/*/*.sig
           if-no-files-found: error
           retention-days: 14
 
@@ -153,12 +165,15 @@ jobs:
         if: matrix.arch == 'armhf'
         env:
           TARGET: ${{ matrix.target }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/golden-arm/cargo"
           docker run --rm --platform linux/amd64 -v "$GITHUB_WORKSPACE:/workspace" -w /workspace \
             -v "$RUNNER_TEMP/armhf-sysroot:/opt/armhf-sysroot:ro" \
             -v "$RUNNER_TEMP/golden-arm/cargo:/opt/golden-cargo" \
             -e CARGO_HOME=/opt/golden-cargo -e RUST_VERSION -e CI -e TARGET -e GOLDEN_ARM_RUNTIME_SMOKE \
+            -e GOLDEN_RELEASE -e TAURI_SIGNING_PRIVATE_KEY -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
             -e DEBIAN_FRONTEND=noninteractive node:22-bookworm bash -euo pipefail -c '
               apt-get -o Acquire::Retries=3 update
               apt-get install -y --no-install-recommends crossbuild-essential-armhf pkg-config
@@ -172,7 +187,11 @@ jobs:
               chmod +x /tmp/link-armhf
               export CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=/tmp/link-armhf
               npm ci
-              npm run tauri -- build --ci --target "$TARGET" --bundles deb -- --locked
+              release_config=()
+              if [ "$GOLDEN_RELEASE" = true ]; then
+                release_config=(--config src-tauri/tauri.release.conf.json)
+              fi
+              npm run tauri -- build --ci --target "$TARGET" --bundles deb "${release_config[@]}" -- --locked
               if [ "$GOLDEN_ARM_RUNTIME_SMOKE" = true ]; then
                 bash .github/scripts/build-arm-smoke.sh "$TARGET"
               fi
@@ -181,6 +200,8 @@ jobs:
         if: matrix.arch == 'aarch64'
         env:
           TARGET: ${{ matrix.target }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY || '' }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ github.ref_type == 'tag' && secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD || '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/golden-arm/cargo"
           docker run --rm --platform linux/arm64 \
@@ -188,6 +209,7 @@ jobs:
             -v "$RUNNER_TEMP/golden-arm/cargo:/opt/golden-cargo" \
             -e CARGO_HOME=/opt/golden-cargo -e CARGO_BUILD_JOBS=2 \
             -e TARGET -e RUST_VERSION -e CI -e GOLDEN_ARM_RUNTIME_SMOKE \
+            -e GOLDEN_RELEASE -e TAURI_SIGNING_PRIVATE_KEY -e TAURI_SIGNING_PRIVATE_KEY_PASSWORD \
             -e DEBIAN_FRONTEND=noninteractive node:22-bookworm bash -euo pipefail -c '
               apt-get -o Acquire::Retries=3 update
               apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libgtk-3-dev libdbus-1-dev libayatana-appindicator3-dev librsvg2-dev
@@ -195,7 +217,11 @@ jobs:
                 sh -s -- -y --profile minimal --default-host "$TARGET" --default-toolchain "$RUST_VERSION" --no-modify-path
               export PATH="$CARGO_HOME/bin:$PATH"
               npm ci
-              npm run tauri -- build --ci --target "$TARGET" --bundles deb -- --locked
+              release_config=()
+              if [ "$GOLDEN_RELEASE" = true ]; then
+                release_config=(--config src-tauri/tauri.release.conf.json)
+              fi
+              npm run tauri -- build --ci --target "$TARGET" --bundles deb "${release_config[@]}" -- --locked
               if [ "$GOLDEN_ARM_RUNTIME_SMOKE" = true ]; then
                 bash .github/scripts/build-arm-smoke.sh "$TARGET"
               fi
@@ -211,7 +237,9 @@ jobs:
       - uses: actions/upload-artifact@v7
         with:
           name: golden-launcher-${{ matrix.target }}
-          path: src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+          path: |
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb
+            src-tauri/target/${{ matrix.target }}/release/bundle/deb/*.deb.sig
           if-no-files-found: error
           retention-days: 14
       - name: Register ARM AppImages with the runner's QEMU interpreter
@@ -243,3 +271,28 @@ jobs:
               test -x /usr/bin/golden-launcher
               xvfb-run -a "$build/publisher-smoke" official_chataigne_platform_smoke --ignored --nocapture
             '
+
+  draft-release:
+    name: Verify and stage signed release
+    if: github.ref_type == 'tag'
+    needs: [desktop, raspberry-pi]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: golden-launcher-*
+          path: packages
+      - name: Verify signatures and create the update manifest
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends minisign
+          python3 .github/scripts/prepare-release.py "$GITHUB_REF_NAME" packages release-assets
+      - name: Upload a draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/* --verify-tag --draft \
+            --title "Golden Launcher $GITHUB_REF_NAME" --notes-from-tag

@@ -3,7 +3,7 @@ import { listen } from '@tauri-apps/api/event';
 
 export type AppId =
   | 'chataigne' | 'chataigne2' | 'map-gyver' | 'map-gyver2'
-  | 'blux' | 'blinder-kitten' | 'ben-to' | 'lgml';
+  | 'blux' | 'blinder-kitten' | 'ben-to' | 'lgml' | 'snoring-pony';
 
 export type Channel = 'stable' | 'preview';
 export type Availability = 'available' | 'previewOnly' | 'awaitingRelease' | 'unavailable' | 'unknown';
@@ -44,6 +44,11 @@ export interface InstallOutcome {
 }
 
 export type CardOutcome = InstallOutcome & { retryInstall?: boolean };
+
+export const selfUpdater = {
+  prepare: () => invoke<string | null>('prepare_launcher_update'),
+  install: () => invoke<void>('install_launcher_update'),
+};
 
 export const launcher = {
   library: () => invoke<LauncherApp[]>('library'),

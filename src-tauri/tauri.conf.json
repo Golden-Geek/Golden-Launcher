@@ -35,5 +35,13 @@
     "category": "Utility",
     "shortDescription": "Install, update, and open Golden apps",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.icns", "icons/icon.ico"]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVDNzBENzEwNTVFRkVFQkMKUldTODd1OVZFTmR3N0RQMDFlaFk3MzV0Qzg0Tmh6ZEFhbE1PYWNuNHVQQmEvRGwvZndMOUZaWG8K",
+      "endpoints": ["https://github.com/Golden-Geek/Golden-Launcher/releases/latest/download/latest.json"],
+      "requireSignedVersion": true,
+      "windows": { "installMode": "passive" }
+    }
   }
 }

@@ -1,6 +1,10 @@
 # Golden Launcher
 
-Install, update, and open Chataigne, Chataigne 2, MapGyver, MapGyver 2, Blux, BlinderKitten, BenTo, and Le Grand Mechant Loop from one desktop library.
+Install, update, and open Chataigne, Chataigne 2, MapGyver, MapGyver 2, Blux, BlinderKitten, BenTo, Le Grand Mechant Loop, and SnoringPony from one desktop library.
+
+[Download Golden Launcher](https://github.com/Golden-Geek/Golden-Launcher/releases/latest) for Windows x64, macOS Intel or Apple Silicon, Linux x64, or Raspberry Pi OS. On macOS, open the DMG and drag Golden Launcher to Applications.
+
+Golden Launcher checks for its own updates on startup, while it is running, and when you click **Refresh**. It downloads and verifies newer releases in the background. Choose **Install and restart** to apply an update. Debian packages can ask for system administrator approval.
 
 The library defaults to Stable. Enable Preview in an app’s release settings to include prereleases. Updates appear when the selected channel has a package for your device with a version newer than the verified installation. Installed apps can open offline, and cached release data is labeled.
 
@@ -25,7 +29,9 @@ cargo test --locked --manifest-path src-tauri/Cargo.toml
 
 ## Packages
 
-The Desktop packages workflow uploads Windows x64 NSIS, macOS Intel and Apple Silicon DMGs, Linux x64 AppImage and Debian packages, and Raspberry Pi OS aarch64 and armhf Debian packages. CI artifacts are for verification. See the [plan](PLAN.md) and [progress report](PROGRESS.md).
+The Desktop packages workflow uploads Windows x64 NSIS, macOS Intel and Apple Silicon DMGs, Linux x64 AppImage and Debian packages, and Raspberry Pi OS aarch64 and armhf Debian packages. See the [plan](PLAN.md) and [progress report](PROGRESS.md).
+
+To release Golden Launcher, set the same version in `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock`, and `src-tauri/tauri.conf.json`. Push an annotated `vMAJOR.MINOR.PATCH` tag with the release notes. The Desktop packages workflow signs the packages with the repository's `TAURI_SIGNING_PRIVATE_KEY` and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` secrets, verifies the signatures, and stages the downloads and `latest.json` as a draft. Publish the draft as the latest GitHub release to make the updates available.
 
 ### Publishing Chataigne 2 and MapGyver 2
 

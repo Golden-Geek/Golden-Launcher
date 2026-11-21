@@ -255,6 +255,9 @@ h1:focus { outline: none; }
 }
 .banner-error { background: #392723; border-color: #614238; }
 .banner-success { background: #283226; border-color: #42583c; }
+.launcher-update { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; }
+.launcher-update p { margin: 0; }
+.launcher-update p + p { margin-top: 5px; }
 .empty { text-align: center; background: var(--surface); border-color: var(--line); padding: 46px 18px; }
 .empty h2 { color: #f1eee8; font-size: 1.25rem; margin: 10px 0 0; }
 .empty p { color: var(--muted); margin: 8px 0 16px; }
