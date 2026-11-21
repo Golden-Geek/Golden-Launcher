@@ -614,9 +614,8 @@ mod tests {
         let target = Target::current();
         let work = tempfile::tempdir().unwrap();
         let client = releases::client().unwrap();
-        #[cfg(not(target_os = "macos"))]
         assert!(
-            platform::detect(id, work.path(), target).is_none(),
+            platform::installed_versions(id, work.path(), target).is_empty(),
             "use a fresh test environment without Chataigne"
         );
 
@@ -634,10 +633,17 @@ mod tests {
             #[cfg(target_os = "macos")]
             {
                 let _ = digest;
-                platform::validate_pkg(id, &path, &release, target).unwrap();
+                platform::install_on_disposable_runner(id, &path, &release, target).unwrap();
+                let versions = platform::installed_versions(id, work.path(), target);
+                assert_eq!(versions.len(), 1, "expected one native installation");
+                let installed = &versions[0];
+                assert!(same_version(&installed.version, version));
                 println!(
-                    "Verified official Chataigne {version} package identity and architecture."
+                    "Verified installed Chataigne {} at {}",
+                    installed.version,
+                    installed.path.display()
                 );
+                platform::check_disposable_launch(id, installed, target).unwrap();
             }
             #[cfg(not(target_os = "macos"))]
             {

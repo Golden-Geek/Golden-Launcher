@@ -12,7 +12,7 @@ pub use linux::detect;
 #[cfg(target_os = "linux")]
 pub use linux::{install, launch};
 #[cfg(all(test, target_os = "macos"))]
-pub(crate) use macos::validate_pkg;
+pub(crate) use macos::{check_disposable_launch, install_on_disposable_runner};
 #[cfg(target_os = "macos")]
 pub use macos::{install, launch};
 #[cfg(all(test, windows))]

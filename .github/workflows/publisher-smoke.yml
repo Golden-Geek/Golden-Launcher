@@ -22,9 +22,9 @@ jobs:
             runner: windows-2025
           - name: Linux install, update, launch
             runner: ubuntu-22.04
-          - name: macOS Intel package preflight
+          - name: macOS Intel install, update, launch
             runner: macos-15-intel
-          - name: macOS Apple Silicon package preflight
+          - name: macOS Apple Silicon install, update, launch
             runner: macos-15
     steps:
       - uses: actions/checkout@v7
@@ -49,7 +49,7 @@ jobs:
         run: |
           npm ci
           npm run build
-      - name: Verify official packages on Windows and macOS
+      - name: Install, update, and launch on Windows and macOS
         if: runner.os != 'Linux'
         timeout-minutes: 10
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml official_chataigne_platform_smoke -- --ignored --nocapture

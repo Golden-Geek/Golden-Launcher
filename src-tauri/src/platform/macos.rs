@@ -146,12 +146,7 @@ fn quarantine(path: &Path) -> Result<(), String> {
     )
 }
 
-pub(crate) fn validate_pkg(
-    id: AppId,
-    path: &Path,
-    release: &Release,
-    target: Target,
-) -> Result<(), String> {
+fn validate_pkg(id: AppId, path: &Path, release: &Release, target: Target) -> Result<(), String> {
     if id == AppId::MapGyver2 {
         return Err(
             "MapGyver 2 requires a disk image with its own bundle identity and destination.".into(),
@@ -322,6 +317,119 @@ pub fn launch(installed: &Installed) -> Result<(), String> {
         command.arg(&installed.path),
         "Could not open the installed app",
     )
+}
+
+#[cfg(test)]
+pub(crate) fn install_on_disposable_runner(
+    id: AppId,
+    path: &Path,
+    release: &Release,
+    target: Target,
+) -> Result<(), String> {
+    if std::env::var("GOLDEN_DISPOSABLE_SMOKE").as_deref() != Ok("1")
+        || std::env::var("GITHUB_ACTIONS").as_deref() != Ok("true")
+        || std::env::var("RUNNER_ENVIRONMENT").as_deref() != Ok("github-hosted")
+    {
+        return Err(
+            "The system package test requires a disposable GitHub-hosted macOS runner.".into(),
+        );
+    }
+    validate_pkg(id, path, release, target)?;
+    let status = Command::new("/usr/bin/sudo")
+        .args(["-n", "/usr/sbin/installer", "-pkg"])
+        .arg(path)
+        .args(["-target", "/"])
+        .status()
+        .map_err(|error| format!("Could not run macOS Installer ({error})."))?;
+    if !status.success() {
+        return Err(format!("macOS Installer failed with {status}."));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn check_disposable_launch(
+    id: AppId,
+    installed: &Installed,
+    target: Target,
+) -> Result<(), String> {
+    use std::{thread::sleep, time::Duration};
+
+    let (_, executable) = bundle(id, installed.path.clone())
+        .ok_or("The installed application bundle could not be verified.")?;
+    if mach_supports(&executable, target) != Some(true) {
+        return Err("The installed executable does not contain the expected architecture.".into());
+    }
+    let executable = executable
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    if running_process(&executable)?.is_some() {
+        return Err("Chataigne was running before the launch check.".into());
+    }
+    launch(installed)?;
+    let pid = (0..40)
+        .find_map(|_| {
+            sleep(Duration::from_millis(250));
+            running_process(&executable).transpose()
+        })
+        .transpose()?
+        .ok_or("The installed Chataigne executable did not start.")?;
+    sleep(Duration::from_secs(2));
+    if running_process(&executable)? != Some(pid) {
+        return Err("Chataigne quit during startup.".into());
+    }
+    println!("Launched Chataigne {} (PID {pid}).", installed.version);
+    let status = Command::new("/bin/kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .map_err(|error| error.to_string())?;
+    if !status.success() {
+        return Err(format!("Could not stop the test application ({status})."));
+    }
+    for _ in 0..40 {
+        sleep(Duration::from_millis(250));
+        if running_process(&executable)?.is_none() {
+            return Ok(());
+        }
+    }
+    Err("Chataigne did not exit after the launch check.".into())
+}
+
+#[cfg(test)]
+fn running_process(executable: &Path) -> Result<Option<u32>, String> {
+    let name = executable
+        .file_name()
+        .ok_or("The executable has no name.")?;
+    let output = Command::new("/usr/bin/pgrep")
+        .arg("-x")
+        .arg(name)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if output.status.code() == Some(1) {
+        return Ok(None);
+    }
+    if !output.status.success() {
+        return Err(format!(
+            "Could not read the running processes ({}).",
+            output.status
+        ));
+    }
+    for pid in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| line.trim().parse::<i32>().ok())
+    {
+        let mut buffer = [0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+        // libproc writes the running executable's native path into caller-owned storage.
+        let found =
+            unsafe { libc::proc_pidpath(pid, buffer.as_mut_ptr().cast(), buffer.len() as u32) };
+        if found > 0 {
+            let path = buffer.split(|byte| *byte == 0).next().unwrap_or_default();
+            if Path::new(std::ffi::OsStr::from_bytes(path)) == executable {
+                return Ok(Some(pid as u32));
+            }
+        }
+    }
+    Ok(None)
 }
 
 pub fn uninstall(id: AppId, _: &Path, installed: &Installed) -> Result<InstallResult, String> {
