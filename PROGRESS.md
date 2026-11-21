@@ -13,7 +13,7 @@
 
 Each milestone counts equally. The smoke-test milestone includes Raspberry Pi OS hardware for both architectures and a coexistence check once a qualifying MapGyver 2 package is available.
 
-**CI packages** 100% `██████████` · 6 of 6 targets in one run. The Raspberry Pi packages were checked with `dpkg-deb`. [Desktop artifacts](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44920315991)
+**CI packages** 100% `██████████` · 6 of 6 targets in one run. The Raspberry Pi packages were checked with `dpkg-deb` and installed with APT on ARM Debian. [Desktop artifacts](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44922773729)
 
 ## Publisher smoke tests
 
@@ -25,10 +25,16 @@ Each milestone counts equally. The smoke-test milestone includes Raspberry Pi OS
 | macOS Intel | Passed with official Chataigne 1.10.4 → 1.10.5b14 on a hosted runner using the system Installer command. Both versions launched. Graphical Installer approval pending. |
 | macOS Apple Silicon | Passed with official Chataigne 1.10.4 → 1.10.5b14 on a hosted runner using the system Installer command. Both versions launched. Graphical Installer approval pending. |
 | Linux x64 | Passed with official Chataigne 1.10.4 → 1.10.5b14 with Xvfb in CI and WSL, including the FUSE fallback. Both versions opened, then the older version was removed. |
-| Raspberry Pi OS aarch64 | Physical-device test pending |
-| Raspberry Pi OS armhf | Physical-device test pending |
+| Raspberry Pi OS aarch64 | Debian Bookworm container passed on a native arm64 runner. Physical Raspberry Pi OS Desktop test pending. |
+| Raspberry Pi OS armhf | Debian Bookworm container passed using ARMv7 QEMU. Physical Raspberry Pi OS Desktop test pending. |
 
-The Linux x64 Debian package also started the Golden Launcher window under Xvfb. The remaining device checks cover the graphical macOS Installer and both Raspberry Pi OS Desktop architectures on hardware.
+**ARM Debian** 100% `██████████` · 2 of 2 supplemental smoke tests. Both architectures installed and opened official Chataigne 1.10.4 and 1.10.5b14 using the AppImage extraction fallback. Both removed 1.10.4 and verified that 1.10.5b14 stayed installed. [ARM publisher smoke tests](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44922773729)
+
+The Linux x64 Debian package started Golden Launcher under Xvfb. On both ARM Debian architectures, the installed launcher opened a 1440 × 900 window under Xvfb. [ARM launcher window checks](https://github.com/Golden-Geek/Golden-Launcher/actions/runs/44923113502)
+
+### Remaining device checks
+
+Verify downloaded-file approval on Windows, the graphical macOS Installer on Intel and Apple Silicon, and Raspberry Pi OS Desktop on physical aarch64 and armhf devices.
 
 On a clean test desktop, install Chataigne from Stable and verify the installed version. Enable Preview and update. Where native approval is required, cancel once and verify that the installed version stays the same, then retry and approve. Verify that the installed version increased and that **Open** starts the app. Switch to Stable and confirm that the launcher offers **Open** with the installed Preview version. Disconnect the network, refresh to check the cached status, and open the app again.
 
