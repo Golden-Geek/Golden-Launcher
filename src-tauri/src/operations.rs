@@ -17,8 +17,8 @@ use tokio_util::sync::CancellationToken;
 use crate::{
     catalog::AppId,
     platform::{self, InstallResult, Installed, Origin, same_version},
-    releases::{self, PackageKind, Release, Target},
-    state::{Library, install_action},
+    releases::{self, Channel, PackageKind, Release, Target},
+    state::{InstallAction, Library, install_action},
 };
 
 const MAX_PACKAGE_BYTES: u64 = 8 * 1024 * 1024 * 1024;
@@ -151,21 +151,34 @@ pub(crate) fn lock_directory(directory: &Path) -> Result<File, String> {
 pub async fn install(
     app: AppHandle,
     id: AppId,
+    channel: Channel,
     version: String,
     graphical: bool,
+    replace_key: Option<String>,
 ) -> Result<Outcome, String> {
     let state = app.state::<Library>();
     let (_hold, cancellation) = state.operations.begin(id)?;
     let lock = lock_directory(&state.directory)?;
-    let release = state.selected_release(id, &version)?;
+    let Some(release) = cancellation
+        .run_until_cancelled(state.selected_release(id, channel, &version))
+        .await
+    else {
+        return Ok(outcome(
+            Ok(InstallResult::Cancelled),
+            None,
+            &version,
+            false,
+            graphical,
+            state.target,
+        ));
+    };
+    let release = release?;
     let scan = app.clone();
     let installed =
         tauri::async_runtime::spawn_blocking(move || scan.state::<Library>().rescan_app(id))
             .await
             .map_err(|error| error.to_string())?;
-    if install_action(&release, &installed).is_none() {
-        return Err("The selected release is already installed or would replace a newer native installation.".into());
-    }
+    check_install_choice(&release, &installed, replace_key.as_deref())?;
     let temporary = tempfile::Builder::new()
         .prefix("download-")
         .tempdir_in(&state.directory)
@@ -197,9 +210,11 @@ pub async fn install(
             Some(Ok(digest)) => {
                 publish(&work, id, Stage::Verifying, 0, None);
                 validate_package(&destination, release.package.kind, target).and_then(|()| {
+                    let library = work.state::<Library>();
+                    let installed = library.rescan_app(id);
+                    check_install_choice(&release, &installed, replace_key.as_deref())?;
                     publish(&work, id, Stage::Installing, 0, None);
                     native_started = true;
-                    let library = work.state::<Library>();
                     platform::install(
                         id,
                         &library.directory,
@@ -226,6 +241,27 @@ pub async fn install(
     })
     .await
     .map_err(|error| error.to_string())
+}
+
+fn check_install_choice(
+    release: &Release,
+    installed: &[Installed],
+    replace_key: Option<&str>,
+) -> Result<(), String> {
+    match install_action(release, installed) {
+        InstallAction::Installed => Err("The selected version is already installed.".into()),
+        InstallAction::Unavailable => {
+            Err("Could not compare the selected and installed versions.".into())
+        }
+        InstallAction::Replace { key, .. } if replace_key == Some(key.as_str()) => Ok(()),
+        InstallAction::Replace { .. } => {
+            Err("Confirm which installed version to replace and try again.".into())
+        }
+        _ if replace_key.is_some() => {
+            Err("The installed version changed. Check the app and try again.".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn outcome(
@@ -548,6 +584,23 @@ mod tests {
                     .contains("SHA-256")
             );
         });
+    }
+
+    #[test]
+    fn replacing_an_older_native_release_requires_confirmation_for_the_current_install() {
+        let release = releases::chataigne_smoke_release("1.10.4", Target::WinX64);
+        let mut installed = Installed {
+            version: "1.10.5b14".into(),
+            path: "installed".into(),
+            origin: Origin::Native,
+            can_uninstall: true,
+        };
+        let key = installed.key();
+        let versions = std::slice::from_ref(&installed);
+        assert!(check_install_choice(&release, versions, None).is_err());
+        assert!(check_install_choice(&release, versions, Some(&key)).is_ok());
+        installed.version = "1.10.5".into();
+        assert!(check_install_choice(&release, &[installed], Some(&key)).is_err());
     }
 
     #[test]

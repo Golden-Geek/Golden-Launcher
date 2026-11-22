@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, time::Duration};
+use std::{cmp::Ordering, collections::HashSet, time::Duration};
 
 use reqwest::{Client, Response, StatusCode, Url, header, redirect};
 use semver::{Prerelease, Version};
@@ -12,12 +12,11 @@ const SNORING_PONY_GITHUB: &str = "https://api.github.com/repos/boherm/SnoringPo
 const SNORING_PONY_DOWNLOADS: &str = "/boherm/SnoringPony/releases/download/";
 const METADATA_LIMIT: usize = 8 * 1024 * 1024;
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Channel {
-    #[default]
     Stable,
-    Preview,
+    Beta,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -134,7 +133,8 @@ pub fn appimage_header(bytes: &[u8], target: Target) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct Release {
     pub version: String,
-    pub preview: bool,
+    #[serde(alias = "preview")]
+    pub beta: bool,
     pub notes: Vec<String>,
     pub(crate) package: Package,
 }
@@ -151,15 +151,44 @@ pub struct Package {
 pub struct Resolved {
     pub published: bool,
     pub stable: Option<Release>,
-    pub preview: Option<Release>,
+    #[serde(alias = "preview")]
+    pub beta: Option<Release>,
+    #[serde(default)]
+    candidates: Vec<Release>,
 }
 
 impl Resolved {
     pub fn for_channel(&self, channel: Channel) -> Option<&Release> {
         match channel {
             Channel::Stable => self.stable.as_ref(),
-            Channel::Preview => self.preview.as_ref(),
+            // Older caches could mirror the stable release in this slot.
+            Channel::Beta => self.beta.as_ref().filter(|release| release.beta),
         }
+    }
+
+    pub fn versions(&self) -> Vec<(Channel, &str)> {
+        let mut builds: Vec<_> = self
+            .candidates
+            .iter()
+            .chain(self.for_channel(Channel::Stable))
+            .chain(self.for_channel(Channel::Beta))
+            .collect();
+        builds.sort_by(|left, right| order(left, right));
+        let mut seen = HashSet::new();
+        builds
+            .into_iter()
+            .map(|release| {
+                (
+                    if release.beta {
+                        Channel::Beta
+                    } else {
+                        Channel::Stable
+                    },
+                    release.version.as_str(),
+                )
+            })
+            .filter(|key| seen.insert(*key))
+            .collect()
     }
 }
 
@@ -365,7 +394,7 @@ fn legacy_candidates(feed: LegacyFeed, source: Publisher, target: Target) -> (bo
                 .cloned();
             candidates.push(Release {
                 version: entry.version.clone(),
-                preview: beta || !parsed.pre.is_empty(),
+                beta: beta || !parsed.pre.is_empty(),
                 notes: notes.clone(),
                 package: Package {
                     url: format!("{}{filename}", source.directory),
@@ -496,7 +525,7 @@ fn github_target_candidates(
                 } else {
                     parsed.to_string()
                 },
-                preview: build.prerelease || !parsed.pre.is_empty(),
+                beta: build.prerelease || !parsed.pre.is_empty(),
                 notes: build
                     .body
                     .as_ref()
@@ -592,48 +621,82 @@ fn order(left: &Release, right: &Release) -> Ordering {
     let right_version = version(&right.version).expect("parsed release");
     right_version
         .cmp_precedence(&left_version)
-        .then(left.preview.cmp(&right.preview))
+        .then(left.beta.cmp(&right.beta))
 }
 
-async fn resolve(
+pub async fn compatible_version(
     client: &Client,
     id: AppId,
     target: Target,
+    resolved: &Resolved,
+    channel: Channel,
+    version: &str,
+) -> Result<Option<Release>, String> {
+    if let Some(release) = resolved
+        .for_channel(channel)
+        .filter(|release| release.version == version)
+    {
+        return Ok(Some(release.clone()));
+    }
+    let mut error = None;
+    for release in resolved
+        .candidates
+        .iter()
+        .filter(|release| release.version == version && release.beta == (channel == Channel::Beta))
+    {
+        match probe(client, id, &release.package, target).await {
+            Ok(true) => return Ok(Some(release.clone())),
+            Ok(false) => (),
+            Err(reason) => error = Some(reason),
+        }
+    }
+    error.map_or(Ok(None), Err)
+}
+
+async fn resolve<Probe>(
     published: bool,
     mut candidates: Vec<Release>,
-) -> Result<Resolved, String> {
+    check: impl Fn(Package) -> Probe,
+) -> Result<Resolved, String>
+where
+    Probe: Future<Output = Result<bool, String>> + Send,
+{
     candidates.sort_by(order);
-    candidates.dedup_by(|right, left| {
-        right.preview == left.preview && right.package.url == left.package.url
-    });
+    candidates
+        .dedup_by(|right, left| right.beta == left.beta && right.package.url == left.package.url);
     let mut result = Resolved {
         published,
         ..Resolved::default()
     };
-    // Cap concurrent probes and skip archive previews once the newest eligible Preview is known.
-    for batch in candidates.chunks(8) {
-        let probes = batch
-            .iter()
-            .filter(|build| result.preview.is_none() || !build.preview);
-        let outcomes =
-            futures_util::future::join_all(probes.map(|build| async move {
-                (build, probe(client, id, &build.package, target).await)
-            }))
-            .await;
+    // Stop probing a channel once its newest compatible package is found.
+    'probes: for batch in candidates.chunks(8) {
+        let probes = batch.iter().filter(|build| {
+            if build.beta {
+                result.beta.is_none()
+            } else {
+                result.stable.is_none()
+            }
+        });
+        let outcomes = futures_util::future::join_all(probes.map(|build| {
+            let probe = check(build.package.clone());
+            async move { (build, probe.await) }
+        }))
+        .await;
         for (build, exists) in outcomes {
-            if result.preview.is_some() && (result.stable.is_some() || build.preview) {
-                continue;
+            let channel = if build.beta {
+                &mut result.beta
+            } else {
+                &mut result.stable
+            };
+            if channel.is_none() && exists? {
+                *channel = Some(build.clone());
             }
-            if !exists? {
-                continue;
-            }
-            result.preview.get_or_insert_with(|| build.clone());
-            if !build.preview {
-                result.stable = Some(build.clone());
-                return Ok(result);
+            if result.stable.is_some() && result.beta.is_some() {
+                break 'probes;
             }
         }
     }
+    result.candidates = candidates;
     Ok(result)
 }
 
@@ -654,7 +717,7 @@ pub fn chataigne_smoke_release(version: &str, target: Target) -> Release {
     };
     Release {
         version: version.into(),
-        preview: version.contains('b'),
+        beta: version.contains('b'),
         notes: Vec::new(),
         package: Package {
             url: format!(
@@ -683,7 +746,10 @@ async fn refresh_github(
             let result = match feed {
                 Ok(feed) => {
                     let (published, candidates) = github_candidates(feed, id, target);
-                    resolve(client, id, target, published, candidates).await
+                    resolve(published, candidates, |package| async move {
+                        probe(client, id, &package, target).await
+                    })
+                    .await
                 }
                 Err(error) => Err(error.clone()),
             };
@@ -705,7 +771,10 @@ pub async fn refresh_all(
                 let result = match json(client, source.feed).await {
                     Ok(feed) => {
                         let (published, candidates) = legacy_candidates(feed, source, target);
-                        resolve(client, id, target, published, candidates).await
+                        resolve(published, candidates, |package| async move {
+                            probe(client, id, &package, target).await
+                        })
+                        .await
                     }
                     Err(error) => Err(error),
                 };
@@ -745,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn legacy_feed_excludes_placeholder_and_treats_beta_versions_as_preview() {
+    fn legacy_feed_excludes_placeholder_and_recognizes_beta_versions() {
         let feed = serde_json::from_str(
             r#"{
           "winExtension":"exe","osxExtension":"pkg","linuxExtension":"AppImage",
@@ -762,8 +831,8 @@ mod tests {
         );
         assert!(published);
         assert_eq!(builds.len(), 3);
-        assert!(builds[0].preview && builds[2].preview);
-        assert!(!builds[1].preview);
+        assert!(builds[0].beta && builds[2].beta);
+        assert!(!builds[1].beta);
         assert!(
             builds[0]
                 .package
@@ -773,16 +842,64 @@ mod tests {
         let channels = Resolved {
             published,
             stable: Some(builds[1].clone()),
-            preview: Some(builds[0].clone()),
+            beta: Some(builds[0].clone()),
+            ..Resolved::default()
         };
         assert_eq!(
             channels.for_channel(Channel::Stable).unwrap().version,
             "1.0.0"
         );
         assert_eq!(
-            channels.for_channel(Channel::Preview).unwrap().version,
+            channels.for_channel(Channel::Beta).unwrap().version,
             "1.0.1b98"
         );
+    }
+
+    #[test]
+    fn resolves_an_older_beta_even_when_a_newer_stable_is_available() {
+        let builds = ["1.10.5b14", "1.10.6", "1.10.5b15"]
+            .map(|version| chataigne_smoke_release(version, Target::WinX64));
+        let resolved =
+            tauri::async_runtime::block_on(resolve(true, builds.to_vec(), async |package| {
+                Ok(!package.url.contains("1.10.5b15"))
+            }))
+            .unwrap();
+        assert_eq!(
+            resolved.for_channel(Channel::Stable).unwrap().version,
+            "1.10.6"
+        );
+        assert_eq!(
+            resolved.for_channel(Channel::Beta).unwrap().version,
+            "1.10.5b14"
+        );
+        assert_eq!(
+            resolved.versions(),
+            vec![
+                (Channel::Stable, "1.10.6"),
+                (Channel::Beta, "1.10.5b15"),
+                (Channel::Beta, "1.10.5b14")
+            ]
+        );
+    }
+
+    #[test]
+    fn old_stable_only_cache_does_not_duplicate_stable_as_beta() {
+        let mut release =
+            serde_json::to_value(chataigne_smoke_release("1.10.6", Target::WinX64)).unwrap();
+        let fields = release.as_object_mut().unwrap();
+        let beta = fields.remove("beta").unwrap();
+        fields.insert("preview".into(), beta);
+        let cached: Resolved = serde_json::from_value(serde_json::json!({
+            "published": true,
+            "stable": release,
+            "preview": release,
+        }))
+        .unwrap();
+        assert_eq!(
+            cached.for_channel(Channel::Stable).unwrap().version,
+            "1.10.6"
+        );
+        assert!(cached.for_channel(Channel::Beta).is_none());
     }
 
     #[test]
@@ -829,13 +946,13 @@ mod tests {
                 .is_empty()
         );
         let (published, releases) = github_candidates(&feed, AppId::MapGyver2, Target::LinuxArm64);
-        assert!(published && releases[0].preview);
+        assert!(published && releases[0].beta);
         assert_eq!(releases[0].package.sha256.as_ref().unwrap().len(), 64);
         assert!(!github_candidates(&[], AppId::Chataigne2, Target::WinX64).0);
     }
 
     #[test]
-    fn snoring_pony_matches_published_packages_and_treats_beta_tags_as_preview() {
+    fn snoring_pony_matches_published_packages_and_recognizes_beta_tags() {
         let id = AppId::SnoringPony;
         let tag = "1.0.0b19";
         let packages = [
@@ -869,7 +986,7 @@ mod tests {
             let [build] = builds.as_slice() else {
                 panic!("expected one build for {target:?}");
             };
-            assert!(build.preview);
+            assert!(build.beta);
             assert_eq!(build.version, tag);
             assert_eq!(build.package.kind, kind);
             let url = check_package_source(id, &build.package).unwrap();
@@ -913,10 +1030,33 @@ mod tests {
         assert_eq!(results.len(), PRODUCTS.len());
         for (id, result) in results {
             let resolved = result.unwrap_or_else(|error| panic!("{id:?}: {error}"));
+            if id == AppId::Chataigne && Target::current() == Target::WinX64 {
+                let archive = tauri::async_runtime::block_on(async {
+                    for (channel, version) in resolved.versions().into_iter().take(12) {
+                        if !resolved
+                            .for_channel(channel)
+                            .is_some_and(|latest| latest.version == version)
+                            && let Ok(Some(release)) = compatible_version(
+                                &client,
+                                id,
+                                Target::current(),
+                                &resolved,
+                                channel,
+                                version,
+                            )
+                            .await
+                        {
+                            return Some(release.version);
+                        }
+                    }
+                    None
+                });
+                println!("Chataigne archived Windows build: {archive:?}");
+            }
             println!(
-                "{id:?}  stable={:?}  preview={:?}",
+                "{id:?}  stable={:?}  beta={:?}",
                 resolved.stable.map(|build| build.version),
-                resolved.preview.map(|build| build.version),
+                resolved.beta.map(|build| build.version),
             );
         }
     }

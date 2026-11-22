@@ -257,7 +257,7 @@ mod tests {
         };
         let release = Release {
             version: "1.0.0".into(),
-            preview: false,
+            beta: false,
             notes: Vec::new(),
             package,
         };

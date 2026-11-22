@@ -1,33 +1,28 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
   import AppCard from './AppCard.svelte';
-  import { launcher, selfUpdater, type AppId, type CardOutcome, type Channel, type InstalledVersion, type InstallProgress, type LauncherApp } from './api';
+  import AppOrbit from './AppOrbit.svelte';
+  import { launcher, selfUpdater, type AppId, type CardOutcome, type Channel, type InstalledVersion, type InstallProgress, type LauncherApp, type Release } from './api';
   import './styles.css';
 
   let apps = $state<LauncherApp[]>([]);
-  let view = $state<'library' | 'updates'>('library');
+  let selectedId = $state<AppId>();
   let isRefreshing = $state(false);
   let isLoading = $state(true);
   let error = $state('');
-  let lastChecked = $state<Date>();
   let operation = $state<InstallProgress>();
   let canceling = $state(false);
   let outcomes = $state<Partial<Record<AppId, CardOutcome>>>({});
-  let settingsPending = $state<Partial<Record<AppId, boolean>>>({});
   let opening = $state<Partial<Record<AppId, string>>>({});
-  let updateNotice = $state('');
   let launcherVersion = $state<string | null>(null);
   let launcherUpdateError = $state('');
   let launcherChecking = $state(false);
   let launcherInstalling = $state(false);
-  let heading: HTMLHeadingElement;
   let request = 0;
 
-  const updates = $derived(apps.filter((app) => app.installAction === 'update'));
-  const visible = $derived(view === 'library' ? apps : updates);
+  const selected = $derived(apps.find((app) => app.id === selectedId));
   const staleCount = $derived(apps.filter((app) => app.stale).length);
   const failedCount = $derived(apps.filter((app) => app.refreshError).length);
-  const installedCount = $derived(apps.filter((app) => app.installed).length);
 
   function message(reason: unknown) {
     return reason instanceof Error ? reason.message : String(reason);
@@ -48,8 +43,7 @@
     isRefreshing = true;
     error = '';
     try {
-      const refreshed = await launcher.refresh();
-      if (refreshed.some((app) => !app.refreshError)) lastChecked = new Date();
+      await launcher.refresh();
     } catch (reason) {
       error = message(reason);
     } finally {
@@ -65,7 +59,7 @@
     try {
       launcherVersion = await selfUpdater.prepare();
     } catch (reason) {
-      launcherUpdateError = message(reason);
+      console.warn('Could not check for a Golden Launcher update.', reason);
     } finally {
       launcherChecking = false;
     }
@@ -112,40 +106,50 @@
     };
   });
 
-  async function setView(next: typeof view) {
-    if (view === next) return;
-    view = next;
-    updateNotice = '';
+  async function focusAppDetails(id: AppId) {
     await tick();
-    heading?.focus();
+    document.getElementById(`title-${id}`)?.focus();
   }
 
-  async function chooseChannel(app: LauncherApp, channel: Channel) {
-    settingsPending[app.id] = true;
-    delete outcomes[app.id];
-    try {
-      await launcher.setChannel(app.id, channel);
-      await loadLibrary();
-    } catch (reason) {
-      outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false };
-    } finally {
-      settingsPending[app.id] = false;
+  async function focusOrbitApp(id: AppId) {
+    await tick();
+    document.getElementById(`orbit-${id}`)?.focus();
+  }
+
+  function selectApp(id: AppId, fromKeyboard: boolean) {
+    selectedId = selectedId === id ? undefined : id;
+    if (fromKeyboard) {
+      if (selectedId) void focusAppDetails(id);
+      else void focusOrbitApp(id);
     }
   }
 
-  async function install(app: LauncherApp, graphical = false) {
-    if (!app.available || operation || launcherInstalling) return;
-    updateNotice = '';
+  async function handleKeydown(event: KeyboardEvent) {
+    if (event.key === 'F5') {
+      event.preventDefault();
+      if (!isLoading) refreshAll();
+      return;
+    }
+    if (event.key !== 'Escape' || !selected || document.querySelector('dialog[open]')) return;
+    event.preventDefault();
+    const id = selected.id;
+    selectedId = undefined;
+    await focusOrbitApp(id);
+  }
+
+  async function install(app: LauncherApp, channel: Channel, release: Release, graphical = false) {
+    if (operation || launcherInstalling) return;
     delete outcomes[app.id];
     operation = { id: app.id, stage: 'downloading', downloaded: 0, total: null };
+    const retryFor = { channel, version: release.version };
     try {
-      const result = await launcher.install(app.id, app.available.version, graphical);
-      outcomes[app.id] = { ...result, retryInstall: result.kind === 'failed' || result.kind === 'cancelled' };
-      if (view === 'updates' && result.kind === 'installed') {
-        updateNotice = `${app.name} updated to ${app.available.version}.`;
-      }
+      const result = await launcher.install(app.id, channel, release, graphical);
+      outcomes[app.id] = {
+        ...result,
+        retryFor: result.kind === 'failed' || result.kind === 'cancelled' ? retryFor : undefined,
+      };
     } catch (reason) {
-      outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false, retryInstall: true };
+      outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false, retryFor };
     } finally {
       await loadLibrary();
       canceling = false;
@@ -165,14 +169,12 @@
 
   async function manage(app: LauncherApp, version: InstalledVersion, action: 'uninstall' | 'keepCopy') {
     if (operation || launcherInstalling) return;
-    updateNotice = '';
     delete outcomes[app.id];
     const stage = action === 'uninstall' ? 'uninstalling' : 'retaining';
     operation = { id: app.id, stage, downloaded: 0, total: null };
     try {
       const result = await launcher[action](app.id, version.key);
       outcomes[app.id] = result;
-      if (view === 'updates' && result.kind === 'uninstalled') updateNotice = `${app.name} was uninstalled.`;
     } catch (reason) {
       outcomes[app.id] = { kind: 'failed', message: message(reason), retryGraphically: false };
     } finally {
@@ -194,115 +196,62 @@
   }
 </script>
 
-<div class="shell">
-  <aside class="sidebar">
-    <div class="brand">
-      <img src="/launcher.png" alt="" width="42" height="42" />
-      <span>Golden<strong>Launcher</strong></span>
-    </div>
+<svelte:window onkeydown={handleKeydown} />
 
-    <nav aria-label="Launcher">
-      <button class:active={view === 'library'} aria-current={view === 'library' ? 'page' : undefined} onclick={() => setView('library')}>
-        <span class="nav-icon grid-icon" aria-hidden="true"></span> Library
-      </button>
-      <button class:active={view === 'updates'} aria-current={view === 'updates' ? 'page' : undefined} onclick={() => setView('updates')}>
-        <span class="nav-icon updates-icon" aria-hidden="true">↓</span> Updates
-        {#if updates.length || launcherVersion}<span class="nav-count">{updates.length + Number(!!launcherVersion)}</span>{/if}
-      </button>
-    </nav>
-
-    <div class="connection" aria-live="polite">
-      <span class:healthy={!!lastChecked && !failedCount && !isRefreshing} class:stale={!!staleCount}></span>
-      {#if isRefreshing}
-        Checking releases…
-      {:else if staleCount}
-        Cached release data
-      {:else if failedCount}
-        Release check incomplete
-      {:else if lastChecked}
-        Checked at {lastChecked.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-      {:else}
-        Release status pending
+<main class="workspace" aria-label="Golden Launcher">
+  {#if error || failedCount || launcherVersion}
+    <div class="notices">
+      {#if error || failedCount}
+        <div class="banner notice-actions" class:banner-error={!!error}>
+          {#if error}
+            <p role="alert">{error}</p>
+          {:else}
+            <p role="status">
+              Release data could not be refreshed for {failedCount} {failedCount === 1 ? 'app' : 'apps'}.
+              {#if staleCount} Showing cached releases where available.{/if}
+            </p>
+          {/if}
+          <button class="button" disabled={isRefreshing || isLoading} onclick={refreshAll}>
+            {isRefreshing ? 'Checking…' : 'Retry'}
+          </button>
+        </div>
+      {/if}
+      {#if launcherVersion}
+        <div class="banner notice-actions">
+          <div>
+            <p role="status">Golden Launcher {launcherVersion} is ready to install.</p>
+            {#if launcherUpdateError}<p role="alert">Launcher update failed. {launcherUpdateError}</p>{/if}
+          </div>
+          <button class="button primary" disabled={launcherInstalling || !!operation} onclick={installLauncherUpdate}>
+            {launcherInstalling ? 'Installing…' : 'Install and restart'}
+          </button>
+        </div>
       {/if}
     </div>
-  </aside>
+  {/if}
 
-  <main>
-    <header class="page-heading">
-      <div>
-        <h1 tabindex="-1" bind:this={heading}>{view === 'library' ? 'Library' : 'Updates'}</h1>
-        {#if view === 'library'}
-          <p>{apps.length} apps <span aria-hidden="true">·</span> {installedCount} installed</p>
-        {:else}
-          <p>{updates.length} {updates.length === 1 ? 'library update' : 'library updates'} available</p>
-        {/if}
-      </div>
-      <button class="button refresh" disabled={isRefreshing || isLoading} onclick={refreshAll}>
-        <span class:spinning={isRefreshing} aria-hidden="true">↻</span>
-        {isRefreshing ? 'Checking…' : 'Refresh'}
-      </button>
-    </header>
-
-    {#if error}
-      <p class="banner banner-error" role="alert">{error}</p>
-    {:else if failedCount}
-      <p class="banner" role="status">
-        Release data could not be refreshed for {failedCount} {failedCount === 1 ? 'app' : 'apps'}.
-        {#if staleCount} Showing cached releases where available.{/if}
-      </p>
-    {/if}
-    {#if updateNotice}<p class="banner banner-success" role="status">{updateNotice}</p>{/if}
-
-    {#if launcherVersion}
-      <div class="banner launcher-update">
-        <div>
-          <p role="status">Golden Launcher {launcherVersion} is ready to install.</p>
-          {#if launcherUpdateError}<p role="alert">Launcher update failed. {launcherUpdateError}</p>{/if}
-        </div>
-        <button class="button primary" disabled={launcherInstalling || !!operation} onclick={installLauncherUpdate}>
-          {launcherInstalling ? 'Installing…' : 'Install and restart'}
-        </button>
-      </div>
-    {:else if view === 'updates' && launcherChecking}
-      <p class="banner" role="status">Checking for a Golden Launcher update…</p>
-    {:else if view === 'updates' && launcherUpdateError}
-      <div class="banner banner-error launcher-update">
-        <span role="alert">Could not check for a Golden Launcher update. {launcherUpdateError}</span>
-        <button class="button" onclick={checkLauncherUpdate}>Retry</button>
-      </div>
-    {/if}
-
+  <AppOrbit {apps} selectedId={selected?.id} busyId={operation?.id} onSelect={selectApp}>
     {#if isLoading}
-      <div class="empty" role="status"><p>Loading your library…</p></div>
-    {:else if visible.length}
-      <div class="cards" aria-label={view === 'library' ? 'Apps' : 'Available updates'}>
-        {#each visible as app (app.id)}
-          <AppCard
-            {app}
-            progress={operation?.id === app.id ? operation : undefined}
-            {canceling}
-            outcome={outcomes[app.id]}
-            installDisabled={!!operation || launcherInstalling || !!settingsPending[app.id]}
-            settingsDisabled={operation?.id === app.id || !!settingsPending[app.id]}
-            openingVersion={opening[app.id]}
-            onChannel={(channel) => chooseChannel(app, channel)}
-            onInstall={(graphical) => install(app, graphical)}
-            onCancel={() => cancel(app.id)}
-            onOpen={(version) => open(app, version)}
-            onUninstall={(version) => manage(app, version, 'uninstall')}
-            onKeepCopy={(version) => manage(app, version, 'keepCopy')}
-          />
-        {/each}
-      </div>
-    {:else if view === 'updates'}
-      <div class="empty">
-        <span class="empty-mark" aria-hidden="true">✓</span>
-        <h2>{isRefreshing ? 'Checking the library' : 'No library updates available'}</h2>
-        <p>Available updates for installed apps appear here.</p>
-        <button class="button" onclick={() => setView('library')}>View library</button>
-      </div>
-    {:else}
-      <div class="empty"><p>The library could not be loaded.</p></div>
+      <p class="hub-subtitle" role="status">Loading your library…</p>
+    {:else if selected}
+      {@const app = selected}
+      {#key app.id}
+        <AppCard
+          {app}
+          progress={operation?.id === app.id ? operation : undefined}
+          {canceling}
+          outcome={outcomes[app.id]}
+          installDisabled={!!operation || launcherInstalling}
+          openingVersion={opening[app.id]}
+          onInstall={(channel, release, graphical) => install(app, channel, release, graphical)}
+          onCancel={() => cancel(app.id)}
+          onOpen={(version) => open(app, version)}
+          onUninstall={(version) => manage(app, version, 'uninstall')}
+          onKeepCopy={(version) => manage(app, version, 'keepCopy')}
+        />
+      {/key}
+    {:else if !apps.length && !error}
+      <p class="hub-subtitle">The library could not be loaded.</p>
     {/if}
-  </main>
-</div>
+  </AppOrbit>
+</main>

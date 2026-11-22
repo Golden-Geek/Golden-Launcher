@@ -4,11 +4,11 @@ Install, update, and open Chataigne, Chataigne 2, MapGyver, MapGyver 2, Blux, Bl
 
 [Download Golden Launcher](https://github.com/Golden-Geek/Golden-Launcher/releases/latest) for Windows x64 or ARM64, macOS Intel or Apple Silicon, Linux x64, or Raspberry Pi OS. On macOS, open the DMG and drag Golden Launcher to Applications.
 
-Golden Launcher checks for its own updates on startup, while it is running, and when you click **Refresh**. It downloads and verifies newer releases in the background. Choose **Install and restart** to apply an update. Debian packages can ask for system administrator approval. On Windows 11 ARM64, the library prefers native ARM64 packages when a publisher provides both builds for the same version and can run x64 packages through Windows emulation.
+Golden Launcher checks for its own updates on startup, while it is running, and when you press **F5**. It downloads and verifies newer releases in the background. Choose **Install and restart** to apply an update. Debian packages can ask for system administrator approval. On Windows 11 ARM64, the library prefers native ARM64 packages when a publisher provides both builds for the same version and can run x64 packages through Windows emulation.
 
-The library defaults to Stable. Enable Preview in an app’s release settings to include prereleases. Updates appear when the selected channel has a package for your device with a version newer than the verified installation. Installed apps can open offline, and cached release data is labeled.
+For a fresh install, select an app to see the latest compatible **Stable** and **Beta** builds side by side. Use the version picker to browse compatible older releases and read their release notes. The launcher marks releases newer than the verified installation as updates. Installed apps can open offline, and cached release data is labeled.
 
-Use **Manage versions** on an app card to open or uninstall a specific installation. On Linux and Raspberry Pi, AppImage updates keep earlier versions. Switch channels and choose **Install alongside** to add a different eligible version. On Windows and macOS, choose **Keep a copy** before updating to preserve the installed version in the launcher. Copies can share the publisher’s app settings and may need the other version closed before launch.
+Use **Manage versions** on an app card to open or uninstall a specific installation. On Linux and Raspberry Pi, AppImage updates keep earlier versions, and **Install alongside** adds a different eligible version. The launcher asks for confirmation before running an installer that would replace a newer native version. On Windows and macOS, choose **Keep a copy** to preserve the installed version in the launcher. Copies can share the publisher’s app settings and may need the other version closed before launch.
 
 ## Development
 

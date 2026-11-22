@@ -5,8 +5,34 @@ export type AppId =
   | 'chataigne' | 'chataigne2' | 'map-gyver' | 'map-gyver2'
   | 'blux' | 'blinder-kitten' | 'ben-to' | 'lgml' | 'snoring-pony';
 
-export type Channel = 'stable' | 'preview';
-export type Availability = 'available' | 'previewOnly' | 'awaitingRelease' | 'unavailable' | 'unknown';
+export type Channel = 'stable' | 'beta';
+export type Availability = 'available' | 'awaitingRelease' | 'unavailable' | 'unknown';
+
+export type ReleaseAction =
+  | { kind: 'install' | 'update' | 'alongside' | 'installed' | 'unavailable' }
+  | { kind: 'replace'; key: string; version: string };
+
+export interface Release {
+  version: string;
+  notes: string[];
+  action: ReleaseAction;
+}
+
+export interface VersionCursor {
+  channel: Channel;
+  version: string;
+}
+
+export interface PublishedVersion {
+  channel: Channel;
+  release: Release;
+}
+
+interface VersionPage {
+  versions: PublishedVersion[];
+  next: VersionCursor | null;
+  incomplete: boolean;
+}
 
 export interface InstalledVersion {
   key: string;
@@ -20,14 +46,12 @@ export interface LauncherApp {
   id: AppId;
   name: string;
   description: string;
-  channel: Channel;
   availability: Availability;
   stale: boolean;
   refreshError: string | null;
   installed: InstalledVersion | null;
   installedVersions: InstalledVersion[];
-  installAction: 'install' | 'update' | 'alongside' | null;
-  available: { version: string; preview: boolean; notes: string[] } | null;
+  releases: Record<Channel, Release | null>;
 }
 
 export interface InstallProgress {
@@ -43,7 +67,7 @@ export interface InstallOutcome {
   retryGraphically: boolean;
 }
 
-export type CardOutcome = InstallOutcome & { retryInstall?: boolean };
+export type CardOutcome = InstallOutcome & { retryFor?: { channel: Channel; version: string } };
 
 export const selfUpdater = {
   prepare: () => invoke<string | null>('prepare_launcher_update'),
@@ -53,9 +77,12 @@ export const selfUpdater = {
 export const launcher = {
   library: () => invoke<LauncherApp[]>('library'),
   refresh: () => invoke<LauncherApp[]>('refresh'),
-  setChannel: (id: AppId, channel: Channel) => invoke<LauncherApp[]>('set_channel', { id, channel }),
-  install: (id: AppId, version: string, graphical: boolean) =>
-    invoke<InstallOutcome>('install', { id, version, graphical }),
+  versions: (id: AppId, after: VersionCursor | null) => invoke<VersionPage>('release_versions', { id, after }),
+  install: (id: AppId, channel: Channel, release: Release, graphical: boolean) =>
+    invoke<InstallOutcome>('install', {
+      id, channel, version: release.version, graphical,
+      replaceKey: release.action.kind === 'replace' ? release.action.key : null,
+    }),
   cancel: (id: AppId) => invoke<boolean>('cancel_download', { id }),
   open: (id: AppId, key: string) => invoke<void>('launch', { id, key }),
   uninstall: (id: AppId, key: string) => invoke<InstallOutcome>('uninstall', { id, key }),

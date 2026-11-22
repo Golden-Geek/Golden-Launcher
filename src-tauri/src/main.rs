@@ -20,8 +20,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             state::library,
+            state::release_versions,
             state::refresh,
-            state::set_channel,
             operations::install,
             operations::cancel_download,
             operations::launch,

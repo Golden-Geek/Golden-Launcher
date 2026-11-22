@@ -36,7 +36,7 @@ The Linux x64 Debian package started Golden Launcher under Xvfb. On both ARM Deb
 
 Verify downloaded-file approval on Windows, the graphical macOS Installer on Intel and Apple Silicon, and Raspberry Pi OS Desktop on physical aarch64 and armhf devices.
 
-On a clean test desktop, install Chataigne from Stable and verify the installed version. Enable Preview and update. Where native approval is required, cancel once and verify that the installed version stays the same, then retry and approve. Verify that the installed version increased and that **Open** starts the app. Switch to Stable and confirm that the launcher offers **Open** with the installed Preview version. Disconnect the network, refresh to check the cached status, and open the app again.
+On a clean test desktop, confirm that Stable and Beta are visible together before installing a Stable build. Use **Choose version** to select a newer Beta when available. Where native approval is required, cancel once and verify that the installed version stays the same, then retry and approve. Verify that **Open** starts the installed Beta build. Check that choosing an older Stable build prompts for native replacement or offers to install alongside an AppImage. Disconnect the network, refresh to check the cached status, and open the app again.
 
 Once a distinct MapGyver 2 package ships, install it alongside MapGyver, open both apps, then update MapGyver 2 and confirm that MapGyver still opens at its previous version.
 
