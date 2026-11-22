@@ -30,6 +30,7 @@ use crate::{
 
 use super::{InstallResult, Installed, Origin, newest, same_version, working_directory};
 
+const IMAGE_FILE_MACHINE_ARM64: u16 = 0xaa64;
 const UNINSTALL: &str = r"Software\Microsoft\Windows\CurrentVersion\Uninstall";
 const INNO_QUIET_ARGS: &str = "/VERYSILENT /SP- /NORESTART /RESTARTEXITCODE=3010";
 
@@ -96,7 +97,7 @@ fn version_from(strings: &VersionStrings) -> Option<String> {
         .cloned()
 }
 
-fn installed_exe(id: AppId, path: PathBuf) -> Option<Installed> {
+fn installed_exe(id: AppId, path: PathBuf, target: Target) -> Option<Installed> {
     let named_correctly = names(id).iter().any(|name| {
         path.file_name()
             .and_then(OsStr::to_str)
@@ -107,7 +108,7 @@ fn installed_exe(id: AppId, path: PathBuf) -> Option<Installed> {
     }
     let map = FileMap::open(&path).ok()?;
     let image = PeFile::from_bytes(map.as_ref()).ok()?;
-    if image.file_header().Machine != IMAGE_FILE_MACHINE_AMD64 {
+    if !is_supported_application(image.file_header().Machine, target) {
         return None;
     }
     let strings = version_strings(&image)?;
@@ -117,6 +118,11 @@ fn installed_exe(id: AppId, path: PathBuf) -> Option<Installed> {
         can_uninstall: false,
         origin: Origin::Native,
     })
+}
+
+fn is_supported_application(machine: u16, target: Target) -> bool {
+    machine == IMAGE_FILE_MACHINE_AMD64
+        || (target == Target::WinArm64 && machine == IMAGE_FILE_MACHINE_ARM64)
 }
 
 fn icon_to_path(value: &str) -> Option<PathBuf> {
@@ -199,7 +205,7 @@ fn find_uninstaller(id: AppId, installed: &Installed) -> Option<PathBuf> {
         })
 }
 
-pub fn detect(id: AppId, _: &Path, _: Target) -> Option<Installed> {
+pub fn detect(id: AppId, _: &Path, target: Target) -> Option<Installed> {
     let mut candidates = Vec::new();
     for key in uninstall_entries(id) {
         if let Ok(icon) = key.get_value::<String, _>("DisplayIcon")
@@ -226,23 +232,26 @@ pub fn detect(id: AppId, _: &Path, _: Target) -> Option<Installed> {
     let mut installed = newest(
         candidates
             .into_iter()
-            .filter_map(|path| installed_exe(id, path)),
+            .filter_map(|path| installed_exe(id, path, target)),
     )?;
     installed.can_uninstall = find_uninstaller(id, &installed).is_some();
     Some(installed)
 }
 
-fn validate_installer(id: AppId, path: &Path, release: &Release) -> Result<(), String> {
+fn validate_installer(
+    id: AppId,
+    path: &Path,
+    release: &Release,
+    target: Target,
+) -> Result<(), String> {
     let map = FileMap::open(path)
         .map_err(|error| format!("Could not read the Windows installer ({error})."))?;
     let bytes = map.as_ref();
     let image =
         PeFile::from_bytes(bytes).map_err(|_| "The Windows installer is not a valid PE file.")?;
     // Inno and NSIS may use a 32-bit loader to install 64-bit applications.
-    if !matches!(
-        image.file_header().Machine,
-        IMAGE_FILE_MACHINE_I386 | IMAGE_FILE_MACHINE_AMD64
-    ) {
+    let machine = image.file_header().Machine;
+    if machine != IMAGE_FILE_MACHINE_I386 && !is_supported_application(machine, target) {
         return Err("The Windows installer has an unexpected CPU architecture.".into());
     }
     let marker = match release.package.kind {
@@ -340,7 +349,7 @@ pub fn install(
     graphical: bool,
     target: Target,
 ) -> Result<InstallResult, String> {
-    validate_installer(id, path, release)?;
+    validate_installer(id, path, release, target)?;
     let args = match (release.package.kind, graphical) {
         (PackageKind::Inno, false) => INNO_QUIET_ARGS,
         (PackageKind::Inno, true) => "/NORESTART /RESTARTEXITCODE=3010",
@@ -402,9 +411,9 @@ pub fn can_retain(id: AppId, installed: &Installed) -> bool {
 }
 
 pub fn read_copy(id: AppId, directory: &Path) -> Option<Installed> {
-    names(id)
-        .iter()
-        .find_map(|name| installed_exe(id, directory.join(format!("{name}.exe"))))
+    names(id).iter().find_map(|name| {
+        installed_exe(id, directory.join(format!("{name}.exe")), Target::current())
+    })
 }
 
 pub fn copy_installed(_: AppId, installed: &Installed, directory: &Path) -> Result<(), String> {
@@ -439,7 +448,7 @@ pub(crate) fn install_on_disposable_runner(
     path: &Path,
     release: &Release,
 ) -> Result<InstallResult, String> {
-    validate_installer(id, path, release)?;
+    validate_installer(id, path, release, Target::current())?;
     let status = Command::new(path)
         .args(INNO_QUIET_ARGS.split_whitespace())
         .status()
