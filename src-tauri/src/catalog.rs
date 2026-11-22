@@ -11,6 +11,7 @@ pub enum AppId {
     BlinderKitten,
     BenTo,
     Lgml,
+    SnoringPony,
 }
 
 impl AppId {
@@ -24,6 +25,7 @@ impl AppId {
             Self::BlinderKitten => "blinder-kitten",
             Self::BenTo => "ben-to",
             Self::Lgml => "lgml",
+            Self::SnoringPony => "snoring-pony",
         }
     }
 
@@ -38,6 +40,7 @@ impl AppId {
             Self::BlinderKitten => "BlinderKitten",
             Self::BenTo => "BenTo",
             Self::Lgml => "LGML",
+            Self::SnoringPony => "SnoringPony",
         }
     }
 }
@@ -49,7 +52,7 @@ pub struct Product {
     pub description: &'static str,
 }
 
-pub const PRODUCTS: [Product; 8] = [
+pub const PRODUCTS: [Product; 9] = [
     Product {
         id: AppId::Chataigne,
         name: "Chataigne",
@@ -89,5 +92,10 @@ pub const PRODUCTS: [Product; 8] = [
         id: AppId::Lgml,
         name: "Le Grand Mechant Loop",
         description: "Perform with audio loops, effects, and live routing.",
+    },
+    Product {
+        id: AppId::SnoringPony,
+        name: "SnoringPony",
+        description: "Run audio, playlists, and OSC cues for live theater.",
     },
 ];

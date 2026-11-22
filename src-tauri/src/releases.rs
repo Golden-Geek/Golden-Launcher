@@ -8,6 +8,8 @@ use crate::catalog::{AppId, PRODUCTS};
 
 const GITHUB: &str = "https://api.github.com/repos/Golden-Geek/Chataigne2/releases";
 const GITHUB_DOWNLOADS: &str = "/Golden-Geek/Chataigne2/releases/download/";
+const SNORING_PONY_GITHUB: &str = "https://api.github.com/repos/boherm/SnoringPony/releases";
+const SNORING_PONY_DOWNLOADS: &str = "/boherm/SnoringPony/releases/download/";
 const METADATA_LIMIT: usize = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -197,7 +199,7 @@ fn publisher(id: AppId) -> Option<Publisher> {
             "https://benjamin.kuperberg.fr/lgml/releases/update.json",
             "LGML",
         ),
-        AppId::Chataigne2 | AppId::MapGyver2 => return None,
+        AppId::Chataigne2 | AppId::MapGyver2 | AppId::SnoringPony => return None,
     };
     Some(Publisher {
         directory,
@@ -257,7 +259,13 @@ pub fn check_package_source(id: AppId, package: &Package) -> Result<Url, String>
         Some(source) => {
             allowed_url(&url, PUBLISHER_HOSTS) && url.as_str().starts_with(source.directory)
         }
-        None => allowed_url(&url, &["github.com"]) && url.path().starts_with(GITHUB_DOWNLOADS),
+        None => {
+            let directory = match id {
+                AppId::SnoringPony => SNORING_PONY_DOWNLOADS,
+                _ => GITHUB_DOWNLOADS,
+            };
+            allowed_url(&url, &["github.com"]) && url.path().starts_with(directory)
+        }
     };
     if !approved || url.query().is_some() || url.fragment().is_some() {
         return Err("The package is outside its approved publisher download directory.".into());
@@ -411,32 +419,56 @@ fn github_kind(filename: &str, expected: &Version, target: Target) -> Option<Pac
     }
 }
 
+fn snoring_pony_kind(filename: &str, tag: &str, target: Target) -> Option<PackageKind> {
+    let kind = match target {
+        Target::WinX64 => PackageKind::Inno,
+        Target::MacIntel | Target::MacSilicon => PackageKind::Pkg,
+        Target::LinuxX64 => PackageKind::AppImage,
+        _ => return None,
+    };
+    (filename == format!("{}-{tag}.{}", target.legacy_suffix(), kind.extension())).then_some(kind)
+}
+
 fn github_candidates(feed: &[GithubRelease], id: AppId, target: Target) -> (bool, Vec<Release>) {
+    let snoring_pony = id == AppId::SnoringPony;
     let mut published = false;
     let mut candidates = Vec::new();
     for build in feed.iter().filter(|build| !build.draft) {
+        // Shared releases can use independent product versions in their tags.
+        let product_tag = v2_stem(id, &build.tag_name).map(|tag| tag.replace('_', "-"));
+        let tag = product_tag.as_deref().unwrap_or(&build.tag_name);
+        let parsed = version(tag).filter(|parsed| *parsed != Version::new(0, 0, 0));
         for asset in build
             .assets
             .iter()
             .filter(|asset| asset.state == "uploaded" && asset.size > 0)
         {
-            let Some(filename) = v2_stem(id, &asset.name) else {
+            let filename = if snoring_pony {
+                asset.name.strip_prefix("SnoringPony-").map(str::to_owned)
+            } else {
+                v2_stem(id, &asset.name)
+            };
+            let Some(filename) = filename else {
                 continue;
             };
             published = true;
-            // Shared releases can use independent product versions in their tags.
-            let tag = v2_stem(id, &build.tag_name)
-                .map(|tag| tag.replace('_', "-"))
-                .unwrap_or_else(|| build.tag_name.clone());
-            let Some(parsed) = version(&tag).filter(|parsed| *parsed != Version::new(0, 0, 0))
-            else {
+            let Some(parsed) = parsed.as_ref() else {
                 continue;
             };
-            let Some(kind) = github_kind(&filename, &parsed, target) else {
+            let kind = if snoring_pony {
+                snoring_pony_kind(&filename, tag, target)
+            } else {
+                github_kind(&filename, parsed, target)
+            };
+            let Some(kind) = kind else {
                 continue;
             };
             candidates.push(Release {
-                version: parsed.to_string(),
+                version: if snoring_pony {
+                    tag.to_owned()
+                } else {
+                    parsed.to_string()
+                },
                 preview: build.prerelease || !parsed.pre.is_empty(),
                 notes: build
                     .body
@@ -478,10 +510,10 @@ async fn json<T: DeserializeOwned>(client: &Client, url: &str) -> Result<T, Stri
     serde_json::from_slice(&bytes).map_err(|error| format!("Invalid publisher metadata ({error})."))
 }
 
-async fn github(client: &Client) -> Result<Vec<GithubRelease>, String> {
+async fn github(client: &Client, url: &str) -> Result<Vec<GithubRelease>, String> {
     let mut all = Vec::new();
     for page in 1..=20 {
-        let batch: Vec<_> = json(client, &format!("{GITHUB}?per_page=100&page={page}")).await?;
+        let batch: Vec<_> = json(client, &format!("{url}?per_page=100&page={page}")).await?;
         let last = batch.len() < 100;
         all.extend(batch);
         if last {
@@ -605,6 +637,29 @@ pub fn chataigne_smoke_release(version: &str, target: Target) -> Release {
     }
 }
 
+async fn refresh_github(
+    client: &Client,
+    target: Target,
+    url: &str,
+    apps: &[AppId],
+) -> Vec<(AppId, Result<Resolved, String>)> {
+    let feed = github(client, url).await;
+    futures_util::future::join_all(apps.iter().map(|&id| {
+        let feed = &feed;
+        async move {
+            let result = match feed {
+                Ok(feed) => {
+                    let (published, candidates) = github_candidates(feed, id, target);
+                    resolve(client, id, target, published, candidates).await
+                }
+                Err(error) => Err(error.clone()),
+            };
+            (id, result)
+        }
+    }))
+    .await
+}
+
 pub async fn refresh_all(
     client: &Client,
     target: Target,
@@ -626,25 +681,19 @@ pub async fn refresh_all(
         }))
         .await
     };
-    let modern = async {
-        let feed = github(client).await;
-        futures_util::future::join_all([AppId::Chataigne2, AppId::MapGyver2].map(|id| {
-            let feed = &feed;
-            async move {
-                let result = match feed {
-                    Ok(feed) => {
-                        let (published, candidates) = github_candidates(feed, id, target);
-                        resolve(client, id, target, published, candidates).await
-                    }
-                    Err(error) => Err(error.clone()),
-                };
-                (id, result)
-            }
-        }))
-        .await
-    };
-    let (mut legacy, modern) = futures_util::future::join(legacy, modern).await;
+    let (mut legacy, modern, snoring_pony) = futures_util::future::join3(
+        legacy,
+        refresh_github(
+            client,
+            target,
+            GITHUB,
+            &[AppId::Chataigne2, AppId::MapGyver2],
+        ),
+        refresh_github(client, target, SNORING_PONY_GITHUB, &[AppId::SnoringPony]),
+    )
+    .await;
     legacy.extend(modern);
+    legacy.extend(snoring_pony);
     legacy
 }
 
@@ -745,6 +794,55 @@ mod tests {
         assert!(published && releases[0].preview);
         assert_eq!(releases[0].package.sha256.as_ref().unwrap().len(), 64);
         assert!(!github_candidates(&[], AppId::Chataigne2, Target::WinX64).0);
+    }
+
+    #[test]
+    fn snoring_pony_matches_published_packages_and_treats_beta_tags_as_preview() {
+        let id = AppId::SnoringPony;
+        let tag = "1.0.0b19";
+        let packages = [
+            ("win-x64", Target::WinX64, PackageKind::Inno),
+            ("osx-intel", Target::MacIntel, PackageKind::Pkg),
+            ("osx-silicon", Target::MacSilicon, PackageKind::Pkg),
+            ("linux-x64", Target::LinuxX64, PackageKind::AppImage),
+        ];
+        let assets = packages.map(|(platform, _, kind)| {
+            let name = format!("SnoringPony-{platform}-{tag}.{}", kind.extension());
+            GithubAsset {
+                browser_download_url: format!(
+                    "https://github.com{SNORING_PONY_DOWNLOADS}{tag}/{name}"
+                ),
+                name,
+                state: "uploaded".into(),
+                digest: None,
+                size: 500,
+            }
+        });
+        let feed = [GithubRelease {
+            tag_name: tag.into(),
+            body: None,
+            draft: false,
+            prerelease: false,
+            assets: assets.into(),
+        }];
+        for (platform, target, kind) in packages {
+            let (published, builds) = github_candidates(&feed, id, target);
+            assert!(published);
+            let [build] = builds.as_slice() else {
+                panic!("expected one build for {target:?}");
+            };
+            assert!(build.preview);
+            assert_eq!(build.version, tag);
+            assert_eq!(build.package.kind, kind);
+            let url = check_package_source(id, &build.package).unwrap();
+            assert!(url.path().ends_with(&format!(
+                "SnoringPony-{platform}-{tag}.{}",
+                kind.extension()
+            )));
+            assert!(check_package_source(AppId::Chataigne2, &build.package).is_err());
+        }
+        let (published, builds) = github_candidates(&feed, id, Target::LinuxArm64);
+        assert!(published && builds.is_empty());
     }
 
     #[test]

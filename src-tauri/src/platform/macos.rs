@@ -26,6 +26,7 @@ fn bundle_id(id: AppId) -> &'static str {
         AppId::BlinderKitten => "norbertrostaing.BlinderKitten",
         AppId::BenTo => "benkuper.Bento",
         AppId::Lgml => "benkuper.LGML",
+        AppId::SnoringPony => "boherm.SnoringPony",
     }
 }
 

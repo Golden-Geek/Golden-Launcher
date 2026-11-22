@@ -43,6 +43,7 @@ fn names(id: AppId) -> &'static [&'static str] {
         AppId::Blux => &["Blux"],
         AppId::BlinderKitten => &["BlinderKitten"],
         AppId::BenTo => &["BenTo"],
+        AppId::SnoringPony => &["SnoringPony"],
     }
 }
 
