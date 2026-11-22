@@ -1033,9 +1033,9 @@ mod tests {
             if id == AppId::Chataigne && Target::current() == Target::WinX64 {
                 let archive = tauri::async_runtime::block_on(async {
                     for (channel, version) in resolved.versions().into_iter().take(12) {
-                        if !resolved
+                        if resolved
                             .for_channel(channel)
-                            .is_some_and(|latest| latest.version == version)
+                            .is_none_or(|latest| latest.version != version)
                             && let Ok(Some(release)) = compatible_version(
                                 &client,
                                 id,

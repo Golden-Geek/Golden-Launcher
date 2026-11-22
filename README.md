@@ -10,6 +10,12 @@ For a fresh install, select an app to see the latest compatible **Stable** and *
 
 Use **Manage versions** on an app card to open or uninstall a specific installation. On Linux and Raspberry Pi, AppImage updates keep earlier versions, and **Install alongside** adds a different eligible version. The launcher asks for confirmation before running an installer that would replace a newer native version. On Windows and macOS, choose **Keep a copy** to preserve the installed version in the launcher. Copies can share the publisher’s app settings and may need the other version closed before launch.
 
+## Screenshots
+
+![Golden Launcher app orbit grouping apps by installation and update status](docs/screenshots/app-orbit.png)
+
+![Chataigne version picker showing stable and beta builds, the installed version, and release notes controls](docs/screenshots/version-picker.png)
+
 ## Development
 
 Install Node.js 24, Rust 1.95 or later, and the [Tauri 2 prerequisites](https://v2.tauri.app/start/prerequisites/) for your operating system.
